@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-slate-950 text-slate-100 antialiased;
+  background-image:
+    radial-gradient(circle at 12% -8%, rgba(56, 189, 248, 0.10), transparent 45%),
+    radial-gradient(circle at 88% 0%, rgba(167, 139, 250, 0.10), transparent 45%);
+  background-attachment: fixed;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-sm;
+  }
+
+  .panel-header {
+    @apply flex items-center justify-between gap-3 border-b border-white/10 px-5 py-3.5;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold
+      transition-colors disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  .btn-primary {
+    @apply btn bg-cyan-400 text-slate-950 hover:bg-cyan-300;
+  }
+
+  .btn-ghost {
+    @apply btn border border-white/15 text-slate-200 hover:border-white/30 hover:bg-white/5;
+  }
+
+  .chip-tag {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5
+      px-2.5 py-1 text-xs font-medium text-slate-300;
+  }
+
+  .field {
+    @apply w-full rounded-xl border border-white/10 bg-slate-950/60 px-3.5 py-2.5 text-sm
+      text-slate-100 outline-none transition placeholder:text-slate-500
+      focus:border-cyan-400/60 focus:ring-2 focus:ring-cyan-400/20;
+  }
+
+  .stat-label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500;
+  }
+}
+
+/* Thin scrollbars so the live feed does not dominate its panel. */
+.scroll-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-white/15;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}

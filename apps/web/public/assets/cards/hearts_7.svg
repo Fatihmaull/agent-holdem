@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 336" width="240" height="336" role="img" aria-label="7 of hearts">
+  <title>7 of hearts</title>
+  <rect width="240" height="336" rx="18" fill="#fdfcf8"/>
+  <rect x="2.5" y="2.5" width="235" height="331" rx="16" fill="none" stroke="#d8d3c4" stroke-width="3"/>
+  <g fill="#c02434">
+    <g transform="translate(82.16 80.16) scale(0.34) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g>
+    <g transform="translate(157.84 80.16) scale(0.34) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g>
+    <g transform="translate(120 124.08) scale(0.34) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g>
+    <g transform="translate(82.16 168) scale(0.34) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g>
+    <g transform="translate(157.84 168) scale(0.34) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g>
+    <g transform="translate(82.16 255.84) scale(0.34) rotate(180) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g>
+    <g transform="translate(157.84 255.84) scale(0.34) rotate(180) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g>
+  </g>
+  <g fill="#c02434"><text x="22" y="26" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="700" text-anchor="middle" dominant-baseline="middle">7</text><g transform="translate(22 52) scale(0.22) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g></g>
+  <g transform="rotate(180 218 310)" fill="#c02434"><text x="218" y="310" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="700" text-anchor="middle" dominant-baseline="middle">7</text><g transform="translate(218 336) scale(0.22) translate(-50 -50)"><path d="M50 88C20 62 6 47 6 33A21 21 0 0 1 50 22 21 21 0 0 1 94 33c0 14-14 29-44 55Z"/></g></g>
+</svg>

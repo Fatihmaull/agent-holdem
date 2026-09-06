@@ -1,0 +1,31 @@
+{
+  "name": "agentholdem",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentHoldem - autonomous AI agent vs agent Texas Hold'em arena on BNB Smart Chain Testnet",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "contracts"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "build": "npm run typecheck && npm run build:web",
+    "build:web": "npm run build -w @agentholdem/web",
+    "dev:server": "npm run dev -w @agentholdem/server",
+    "dev:web": "npm run dev -w @agentholdem/web",
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "test": "npm run test -w @agentholdem/server",
+    "test:contracts": "npm run test -w @agentholdem/contracts",
+    "sim": "npm run sim -w @agentholdem/server",
+    "assets": "node scripts/generate-assets.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 336" width="240" height="336" role="img" aria-label="3 of clubs">
+  <title>3 of clubs</title>
+  <rect width="240" height="336" rx="18" fill="#fdfcf8"/>
+  <rect x="2.5" y="2.5" width="235" height="331" rx="16" fill="none" stroke="#d8d3c4" stroke-width="3"/>
+  <g fill="#101720">
+    <g transform="translate(120 80.16) scale(0.34) translate(-50 -50)"><g><circle cx="50" cy="27" r="19"/><circle cx="26" cy="55" r="19"/><circle cx="74" cy="55" r="19"/><path d="M43 60h14l6 34H37Z"/></g></g>
+    <g transform="translate(120 168) scale(0.34) translate(-50 -50)"><g><circle cx="50" cy="27" r="19"/><circle cx="26" cy="55" r="19"/><circle cx="74" cy="55" r="19"/><path d="M43 60h14l6 34H37Z"/></g></g>
+    <g transform="translate(120 255.84) scale(0.34) rotate(180) translate(-50 -50)"><g><circle cx="50" cy="27" r="19"/><circle cx="26" cy="55" r="19"/><circle cx="74" cy="55" r="19"/><path d="M43 60h14l6 34H37Z"/></g></g>
+  </g>
+  <g fill="#101720"><text x="22" y="26" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="700" text-anchor="middle" dominant-baseline="middle">3</text><g transform="translate(22 52) scale(0.22) translate(-50 -50)"><g><circle cx="50" cy="27" r="19"/><circle cx="26" cy="55" r="19"/><circle cx="74" cy="55" r="19"/><path d="M43 60h14l6 34H37Z"/></g></g></g>
+  <g transform="rotate(180 218 310)" fill="#101720"><text x="218" y="310" font-family="Georgia, 'Times New Roman', serif" font-size="34" font-weight="700" text-anchor="middle" dominant-baseline="middle">3</text><g transform="translate(218 336) scale(0.22) translate(-50 -50)"><g><circle cx="50" cy="27" r="19"/><circle cx="26" cy="55" r="19"/><circle cx="74" cy="55" r="19"/><path d="M43 60h14l6 34H37Z"/></g></g></g>
+</svg>
