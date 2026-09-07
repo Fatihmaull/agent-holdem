@@ -1,7 +1,8 @@
 import { and, desc, eq, isNotNull, sql as raw } from 'drizzle-orm';
 import { db } from '../db/client';
 import { agents, depositIntents, ledgerEntries, promptTemplates, redemptions, seats, users } from '../db/schema';
-import { chipsToWei, packageById, quoteRedemption, tableById, weiToChips } from '../lib/economy';
+import { TABLES, chipsToWei, packageById, quoteRedemption, tableById, weiToChips } from '../lib/economy';
+import { assignColor } from '../agent/colors';
 import { checkInstructions } from '../lib/instructions';
 import { PayoutUncertain, REQUIRED_CONFIRMATIONS, observeDeposit, payOut, vaultAddress } from './chain';
 import { bytes32ToIntent, intentToBytes32 } from '../lib/intent';
@@ -11,28 +12,48 @@ import { leaveSeat } from './store';
 
 export class ActionError extends Error {}
 
-export interface Account {
-  address: string;
-  chips: number;
-  agent: {
-    id: string;
-    name: string;
-    color: string;
-    instructions: string;
-    handsPlayed: number;
-    handsWon: number;
-    chipsWon: number;
-    biggestPot: number;
-  };
+/**
+ * The transaction handle drizzle hands a `db.transaction` callback. Named here
+ * so helpers can be shared between a standalone action and a step inside a
+ * batch without either of them reaching for the pool directly.
+ */
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+export interface AccountAgent {
+  id: string;
+  name: string;
+  color: string;
+  instructions: string;
+  handsPlayed: number;
+  handsWon: number;
+  chipsWon: number;
+  biggestPot: number;
+  /** Where this agent is sitting, if it is. At most one table each. */
   seat: { tableId: string; seatIndex: number; stack: number } | null;
 }
 
+export interface Account {
+  address: string;
+  chips: number;
+  /**
+   * Oldest first, so the list an owner sees does not reshuffle when one of
+   * them wins a pot.
+   */
+  agents: AccountAgent[];
+}
+
 export async function account(session: Session): Promise<Account> {
-  const [row] = await db
+  const [user] = await db
+    .select({ address: users.address, chips: users.chips })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .limit(1);
+
+  if (!user) throw new ActionError('That account no longer exists.');
+
+  const rows = await db
     .select({
-      address: users.address,
-      chips: users.chips,
-      agentId: agents.id,
+      id: agents.id,
       name: agents.name,
       color: agents.color,
       instructions: agents.instructions,
@@ -40,25 +61,20 @@ export async function account(session: Session): Promise<Account> {
       handsWon: agents.handsWon,
       chipsWon: agents.chipsWon,
       biggestPot: agents.biggestPot,
+      seatTableId: seats.tableId,
+      seatIndex: seats.seatIndex,
+      seatStack: seats.stack,
     })
-    .from(users)
-    .innerJoin(agents, eq(agents.userId, users.id))
-    .where(eq(users.id, session.userId))
-    .limit(1);
-
-  if (!row) throw new ActionError('That account no longer exists.');
-
-  const [seat] = await db
-    .select({ tableId: seats.tableId, seatIndex: seats.seatIndex, stack: seats.stack })
-    .from(seats)
-    .where(eq(seats.agentId, row.agentId))
-    .limit(1);
+    .from(agents)
+    .leftJoin(seats, eq(seats.agentId, agents.id))
+    .where(eq(agents.userId, session.userId))
+    .orderBy(agents.createdAt);
 
   return {
-    address: row.address,
-    chips: row.chips,
-    agent: {
-      id: row.agentId,
+    address: user.address,
+    chips: user.chips,
+    agents: rows.map((row) => ({
+      id: row.id,
       name: row.name,
       color: row.color,
       instructions: row.instructions,
@@ -66,8 +82,11 @@ export async function account(session: Session): Promise<Account> {
       handsWon: row.handsWon,
       chipsWon: row.chipsWon,
       biggestPot: row.biggestPot,
-    },
-    seat: seat ?? null,
+      seat:
+        row.seatTableId !== null && row.seatIndex !== null && row.seatStack !== null
+          ? { tableId: row.seatTableId, seatIndex: row.seatIndex, stack: row.seatStack }
+          : null,
+    })),
   };
 }
 
@@ -75,24 +94,71 @@ const MAX_NAME = 24;
 const MAX_INSTRUCTIONS = 2000;
 
 /**
- * Saving is also gated by the word budget, but only of the table the agent is
+ * One account may own several agents, capped at the number of tables, since a
+ * seventh could never be seated anywhere anyway.
+ */
+const MAX_AGENTS = TABLES.length;
+
+/** Resolves one of the caller's agents, refusing anything they do not own. */
+async function ownedAgent(tx: Transaction, session: Session, agentId: string) {
+  const [agent] = await tx
+    .select({ id: agents.id, instructions: agents.instructions })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.userId, session.userId)))
+    .limit(1);
+  if (!agent) throw new ActionError('That agent is not yours.');
+  return agent;
+}
+
+export async function createAgent(
+  session: Session,
+  input: { name: string; instructions?: string },
+): Promise<{ id: string }> {
+  const name = input.name.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME);
+  if (name.length < 2) throw new ActionError('Give your agent a name of at least two characters.');
+
+  return db.transaction(async (tx) => {
+    const mine = await tx
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.userId, session.userId));
+    if (mine.length >= MAX_AGENTS) {
+      throw new ActionError(`You can keep ${MAX_AGENTS} agents, one for each table. Retire one first.`);
+    }
+
+    const taken = await tx.select({ color: agents.color }).from(agents);
+    const [created] = await tx
+      .insert(agents)
+      .values({
+        userId: session.userId,
+        name,
+        color: assignColor(taken.map((row) => row.color)).id,
+        instructions: (input.instructions ?? '').slice(0, MAX_INSTRUCTIONS),
+      })
+      .returning({ id: agents.id });
+    if (!created) throw new ActionError('Could not create that agent.');
+    return { id: created.id };
+  });
+}
+
+/**
+ * Saving is gated by the word budget, but only of the table this agent is
  * actually sitting at. Otherwise the budget would mean nothing: an owner could
  * take a seat at a ten-word table and immediately rewrite the field to a
  * hundred words, and the seat would keep playing under the longer text.
  */
-export async function saveAgent(session: Session, input: { name: string; instructions: string }): Promise<void> {
+export async function saveAgent(
+  session: Session,
+  agentId: string,
+  input: { name: string; instructions: string },
+): Promise<void> {
   const name = input.name.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME);
   if (name.length < 2) throw new ActionError('Give your agent a name of at least two characters.');
 
   const instructions = input.instructions.slice(0, MAX_INSTRUCTIONS);
 
   await db.transaction(async (tx) => {
-    const [agent] = await tx
-      .select({ id: agents.id })
-      .from(agents)
-      .where(eq(agents.userId, session.userId))
-      .limit(1);
-    if (!agent) throw new ActionError('That account has no agent.');
+    const agent = await ownedAgent(tx, session, agentId);
 
     const [seat] = await tx
       .select({ tableId: seats.tableId })
@@ -104,7 +170,7 @@ export async function saveAgent(session: Session, input: { name: string; instruc
       const table = tableById(seat.tableId);
       const check = table ? checkInstructions(instructions, table.wordLimit) : null;
       if (check && !check.ok) {
-        throw new ActionError(`${check.reason} Take the agent off that table to write more.`);
+        throw new ActionError(`${check.reason} Take this agent off that table to write more.`);
       }
     }
 
@@ -112,6 +178,21 @@ export async function saveAgent(session: Session, input: { name: string; instruc
       .update(agents)
       .set({ name, instructions, updatedAt: new Date() })
       .where(eq(agents.id, agent.id));
+  });
+}
+
+/** Retires an agent. Refuses while it is seated, so no stack is orphaned. */
+export async function deleteAgent(session: Session, agentId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const agent = await ownedAgent(tx, session, agentId);
+
+    const [seat] = await tx.select({ id: seats.id }).from(seats).where(eq(seats.agentId, agent.id)).limit(1);
+    if (seat) throw new ActionError('Take this agent off its table before retiring it.');
+
+    const mine = await tx.select({ id: agents.id }).from(agents).where(eq(agents.userId, session.userId));
+    if (mine.length <= 1) throw new ActionError('An account keeps at least one agent.');
+
+    await tx.delete(agents).where(eq(agents.id, agent.id));
   });
 }
 
@@ -199,70 +280,175 @@ export async function deleteTemplate(session: Session, id: string): Promise<void
 }
 
 /**
- * Seats an agent, moving the buy-in from the account balance to the seat.
+ * Seats one agent, moving the buy-in from the account balance to the seat.
  * The debit and the seat are one transaction, so chips can never exist in both
  * places or in neither.
  */
-export async function joinTable(session: Session, tableId: string): Promise<{ seatIndex: number }> {
-  const table = tableById(tableId);
-  if (!table) throw new ActionError('That table does not exist.');
-
-  const seatIndex = await db.transaction(async (tx) => {
-    const [agent] = await tx
-      .select({ id: agents.id, instructions: agents.instructions })
-      .from(agents)
-      .where(eq(agents.userId, session.userId))
-      .limit(1);
-    if (!agent) throw new ActionError('That account has no agent.');
-
-    const [alreadySeated] = await tx.select({ id: seats.id }).from(seats).where(eq(seats.agentId, agent.id)).limit(1);
-    if (alreadySeated) throw new ActionError('Your agent is already at a table. Take it off that one first.');
-
-    // The word budget is checked here, before any chips move. A seat is the
-    // only thing the budget governs, so this is the one place it has to hold.
-    const fit = checkInstructions(agent.instructions, table.wordLimit);
-    if (!fit.ok) throw new ActionError(fit.reason);
-
-    const taken = await tx.select({ seatIndex: seats.seatIndex }).from(seats).where(eq(seats.tableId, tableId));
-    const used = new Set(taken.map((row) => row.seatIndex));
-    const open = Array.from({ length: table.seats }, (_, i) => i).find((i) => !used.has(i));
-    if (open === undefined) throw new ActionError('That table is full.');
-
-    const [debited] = await tx
-      .update(users)
-      .set({ chips: raw`${users.chips} - ${table.buyIn}` })
-      .where(and(eq(users.id, session.userId), raw`${users.chips} >= ${table.buyIn}`))
-      .returning({ chips: users.chips });
-
-    if (!debited) throw new ActionError('Not enough chips for that buy-in. Visit the cashier.');
-
-    await tx.insert(ledgerEntries).values({
-      userId: session.userId,
-      delta: -table.buyIn,
-      balanceAfter: debited.chips,
-      reason: 'table-buy-in',
-      reference: `${tableId}:${open}`,
-    });
-
-    await tx.insert(seats).values({ tableId, seatIndex: open, agentId: agent.id, stack: table.buyIn });
-    return open;
-  });
-
+export async function joinTable(
+  session: Session,
+  tableId: string,
+  agentId: string,
+): Promise<{ seatIndex: number }> {
+  const seatIndex = await db.transaction(async (tx) => seatOne(tx, session, tableId, agentId));
   await tableRuntime(tableId)?.refreshSeats();
   return { seatIndex };
 }
 
 /**
- * Takes an agent off its table and returns the stack it is actually holding.
+ * Seats an agent inside an existing transaction.
+ *
+ * Takes a row lock on the account first. Two concurrent joins would otherwise
+ * each read "no seat of mine at this table", pick different open chairs, and
+ * both succeed — which is how one wallet ends up playing itself. Locking the
+ * account serialises everything that spends its chips or claims a chair.
+ */
+async function seatOne(
+  tx: Transaction,
+  session: Session,
+  tableId: string,
+  agentId: string,
+): Promise<number> {
+  const table = tableById(tableId);
+  if (!table) throw new ActionError('That table does not exist.');
+
+  await tx.select({ id: users.id }).from(users).where(eq(users.id, session.userId)).for('update');
+
+  const agent = await ownedAgent(tx, session, agentId);
+
+  const [alreadySeated] = await tx.select({ id: seats.id }).from(seats).where(eq(seats.agentId, agent.id)).limit(1);
+  if (alreadySeated) throw new ActionError('That agent is already at a table. Take it off that one first.');
+
+  // The word budget is checked before any chips move, since a seat is the only
+  // thing the budget governs.
+  const fit = checkInstructions(agent.instructions, table.wordLimit);
+  if (!fit.ok) throw new ActionError(fit.reason);
+
+  const taken = await tx
+    .select({ seatIndex: seats.seatIndex, ownerId: agents.userId })
+    .from(seats)
+    .innerJoin(agents, eq(agents.id, seats.agentId))
+    .where(eq(seats.tableId, tableId));
+
+  // One wallet, one chair at any given table. Two of your own agents in the
+  // same hand would be playing both sides of it, and the spectator feed hides
+  // hole cards per agent rather than per account.
+  if (taken.some((row) => row.ownerId === session.userId)) {
+    throw new ActionError('One of your agents is already at this table. A wallet takes one seat per table.');
+  }
+
+  const used = new Set(taken.map((row) => row.seatIndex));
+  const open = Array.from({ length: table.seats }, (_, i) => i).find((i) => !used.has(i));
+  if (open === undefined) throw new ActionError('That table is full.');
+
+  const [debited] = await tx
+    .update(users)
+    .set({ chips: raw`${users.chips} - ${table.buyIn}` })
+    .where(and(eq(users.id, session.userId), raw`${users.chips} >= ${table.buyIn}`))
+    .returning({ chips: users.chips });
+
+  if (!debited) throw new ActionError('Not enough chips for that buy-in. Visit the cashier.');
+
+  await tx.insert(ledgerEntries).values({
+    userId: session.userId,
+    delta: -table.buyIn,
+    balanceAfter: debited.chips,
+    reason: 'table-buy-in',
+    reference: `${tableId}:${open}`,
+  });
+
+  await tx.insert(seats).values({ tableId, seatIndex: open, agentId: agent.id, stack: table.buyIn });
+  return open;
+}
+
+export interface DeployResult {
+  seated: { tableId: string; agentId: string; agentName: string; seatIndex: number }[];
+  skipped: { tableId: string; reason: string }[];
+}
+
+/**
+ * Sits one piece of writing down at several tables at once.
+ *
+ * Each table gets its own agent, because an agent holds one seat and one
+ * undivided stack. They share the text, not the chips or the record. A table
+ * that cannot be joined is reported and the rest still go down, so a single
+ * full table does not cost the whole deployment.
+ */
+export async function deployAgents(
+  session: Session,
+  input: { name: string; instructions: string; tableIds: string[] },
+): Promise<DeployResult> {
+  const baseName = input.name.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME);
+  if (baseName.length < 2) throw new ActionError('Give the agents a name of at least two characters.');
+
+  const wanted = [...new Set(input.tableIds)];
+  if (wanted.length === 0) throw new ActionError('Choose at least one table.');
+
+  const seated: DeployResult['seated'] = [];
+  const skipped: DeployResult['skipped'] = [];
+
+  // One transaction per table rather than one for all of them: a batch is a
+  // convenience, not an all-or-nothing bet, and an owner would rather have two
+  // of three seats than none.
+  for (const tableId of wanted) {
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const table = tableById(tableId);
+        if (!table) throw new ActionError('That table does not exist.');
+
+        const mine = await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(eq(agents.userId, session.userId));
+        if (mine.length >= MAX_AGENTS) {
+          throw new ActionError(`You can keep ${MAX_AGENTS} agents, one for each table.`);
+        }
+
+        const taken = await tx.select({ color: agents.color }).from(agents);
+        const name = `${baseName} ${table.number}`.slice(0, MAX_NAME);
+        const [created] = await tx
+          .insert(agents)
+          .values({
+            userId: session.userId,
+            name,
+            color: assignColor(taken.map((row) => row.color)).id,
+            instructions: input.instructions.slice(0, MAX_INSTRUCTIONS),
+          })
+          .returning({ id: agents.id, name: agents.name });
+        if (!created) throw new ActionError('Could not create an agent for that table.');
+
+        const seatIndex = await seatOne(tx, session, tableId, created.id);
+        return { agentId: created.id, agentName: created.name, seatIndex };
+      });
+
+      seated.push({ tableId, ...outcome });
+      await tableRuntime(tableId)?.refreshSeats();
+    } catch (error) {
+      if (error instanceof ActionError) skipped.push({ tableId, reason: error.message });
+      else throw error;
+    }
+  }
+
+  if (seated.length === 0 && skipped.length > 0) {
+    throw new ActionError(skipped[0]?.reason ?? 'Could not seat anywhere.');
+  }
+  return { seated, skipped };
+}
+
+/**
+ * Takes one agent off its table and returns the stack it is actually holding.
  *
  * The seat row carries the stack as it stood when the last hand was stored, so
  * paying it out while a hand is running would refund a buy-in the agent is
  * busy losing and mint the difference. A request that lands mid-hand is
  * therefore held by the table and settled the moment the hand is on record.
  */
-export async function leaveTable(session: Session): Promise<{ pending: boolean }> {
-  const [agent] = await db.select({ id: agents.id }).from(agents).where(eq(agents.userId, session.userId)).limit(1);
-  if (!agent) throw new ActionError('That account has no agent.');
+export async function leaveTable(session: Session, agentId: string): Promise<{ pending: boolean }> {
+  const [agent] = await db
+    .select({ id: agents.id })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.userId, session.userId)))
+    .limit(1);
+  if (!agent) throw new ActionError('That agent is not yours.');
 
   const [seat] = await db
     .select({ tableId: seats.tableId, seatIndex: seats.seatIndex })

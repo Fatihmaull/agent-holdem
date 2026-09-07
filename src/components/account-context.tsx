@@ -2,24 +2,14 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { connect, currentAddress, signMessage, WalletError } from '@/lib/wallet';
+// Type-only, so nothing server-side is bundled. Sharing the shape with the
+// action that produces it is what stops the two drifting: a hand-written copy
+// still compiles perfectly after the API stops returning that field.
+import type { Account, AccountAgent } from '@/server/actions';
 
-interface AccountAgent {
-  id: string;
-  name: string;
-  color: string;
-  instructions: string;
-  handsPlayed: number;
-  handsWon: number;
-  chipsWon: number;
-  biggestPot: number;
-}
+export type { Account, AccountAgent };
 
-interface AccountState {
-  address: string;
-  chips: number;
-  agent: AccountAgent;
-  seat: { tableId: string; seatIndex: number; stack: number } | null;
-}
+type AccountState = Account;
 
 interface AccountContextValue {
   account: AccountState | null;

@@ -31,7 +31,7 @@ export function TableList({
   filters?: boolean;
   limit?: number;
   onSeat: (tableId: string) => void;
-  onLeave: () => void;
+  onLeave: (tableId: string) => void;
   /** The table id being seated, or `leave` while a seat is being given up. */
   busy: string | null;
 }) {
@@ -152,11 +152,10 @@ export function TableList({
                 key={table.id}
                 table={table}
                 loaded={lobby.loaded}
-                seatedHere={lobby.seatedAt === table.id}
-                seatedElsewhere={lobby.seatedAt !== null && lobby.seatedAt !== table.id}
+                seatedHere={lobby.seatedAt.includes(table.id)}
                 busy={busy}
                 onSeat={() => onSeat(table.id)}
-                onLeave={onLeave}
+                onLeave={() => onLeave(table.id)}
               />
             ))}
           </ul>
@@ -170,7 +169,6 @@ function TableRow({
   table,
   loaded,
   seatedHere,
-  seatedElsewhere,
   busy,
   onSeat,
   onLeave,
@@ -178,7 +176,6 @@ function TableRow({
   table: LobbyTable;
   loaded: boolean;
   seatedHere: boolean;
-  seatedElsewhere: boolean;
   busy: string | null;
   onSeat: () => void;
   onLeave: () => void;
@@ -187,10 +184,13 @@ function TableRow({
   const taken = seatsTaken(table);
   const full = taken >= table.seatCount;
 
-  // The server decides this, but saying so before the click saves a player a
+  // Which agent would take this seat, and whether its writing is short enough.
+  // The server decides both, but saying so before the click saves a player a
   // round trip and a rejection they would have to go and read.
-  const written = account ? countWords(account.agent.instructions) : 0;
-  const fits = !account || written <= table.wordLimit;
+  const candidate = account?.agents.find((agent) => !agent.seat) ?? null;
+  const written = candidate ? countWords(candidate.instructions) : 0;
+  const fits = !candidate || written <= table.wordLimit;
+  const spare = !account || Boolean(candidate);
 
   return (
     <li className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-3 border-b border-line px-4 py-4 transition-colors last:border-b-0 hover:bg-surface-2/60 sm:px-5 lg:grid-cols-[minmax(11rem,1.4fr)_6rem_7rem_minmax(8rem,1fr)_6rem_11.5rem] lg:gap-4 lg:py-3.5">
@@ -261,20 +261,20 @@ function TableRow({
               size="sm"
               tone="primary"
               onClick={onSeat}
-              disabled={busy !== null || full || seatedElsewhere || !fits}
+              disabled={busy !== null || full || !spare || !fits}
               title={
                 full
                   ? 'Every seat at this table is taken.'
-                  : seatedElsewhere
-                    ? 'Your agent plays one table at a time. Leave its current table first.'
-                    : !account
-                      ? 'Connect a wallet to seat your agent.'
+                  : !account
+                    ? 'Connect a wallet to seat an agent.'
+                    : !spare
+                      ? 'Every one of your agents is already at a table. Add another on the agent page.'
                       : !fits
-                        ? `Your instructions are ${written} words. This table allows ${table.wordLimit}.`
+                        ? `That agent's instructions are ${written} words. This table allows ${table.wordLimit}.`
                         : undefined
               }
             >
-              {busy === table.id ? 'Seating…' : full ? 'Full' : !fits ? 'Too long' : 'Join'}
+              {busy === table.id ? 'Seating…' : full ? 'Full' : !spare ? 'No free agent' : !fits ? 'Too long' : 'Join'}
             </Button>
           </>
         )}

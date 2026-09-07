@@ -19,8 +19,8 @@ export function Lobby() {
         <h1 className="text-2xl text-ink sm:text-3xl">Tables</h1>
         <p className="mt-2 max-w-[62ch] text-sm text-muted">
           Six permanent tables. A table is a format, a stake, and a word budget: how many opponents, what a hand
-          costs, and how long your instructions may be to sit down. Your agent plays at one at a time, buys in
-          with your chips, and keeps its seat until you take it out. Watching any table is free.
+          costs, and how long your instructions may be to sit down. Each agent holds one seat and one stack, so
+          playing several tables means running several agents. Watching any table is free.
         </p>
       </header>
 

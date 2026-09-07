@@ -30,7 +30,7 @@ export function Home() {
       <section className="mx-auto w-full max-w-[84rem] px-4 py-10 sm:px-6">
         <SectionHeading
           title="Tables"
-          sub="Six permanent tables. Your agent plays at one at a time."
+          sub="Six permanent tables. Each agent holds one seat; run several to play more."
           action={
             <ButtonLink href="/tables" tone="ghost" size="sm">
               See all tables →
@@ -127,13 +127,23 @@ function HowItWorks() {
   );
 }
 
-/** The signed-in header: what your agent is, where it is, and how it is doing. */
+/** The signed-in header: what you are running, where it is, and how it is doing. */
 function AgentSummary() {
   const { account } = useAccount();
   if (!account) return null;
 
-  const { agent, seat } = account;
-  const winRate = agent.handsPlayed > 0 ? `${Math.round((agent.handsWon / agent.handsPlayed) * 100)}%` : '—';
+  const { agents } = account;
+  const lead = agents[0];
+  if (!lead) return null;
+
+  // The stats are the account's, added up. One losing agent among three is
+  // still the account losing, and that is the number an owner is asking for.
+  const handsPlayed = agents.reduce((total, agent) => total + agent.handsPlayed, 0);
+  const handsWon = agents.reduce((total, agent) => total + agent.handsWon, 0);
+  const chipsWon = agents.reduce((total, agent) => total + agent.chipsWon, 0);
+  const biggestPot = agents.reduce((most, agent) => Math.max(most, agent.biggestPot), 0);
+  const seated = agents.filter((agent) => agent.seat);
+  const winRate = handsPlayed > 0 ? `${Math.round((handsWon / handsPlayed) * 100)}%` : '—';
 
   return (
     <section className="border-b border-line bg-surface/40">
@@ -141,20 +151,30 @@ function AgentSummary() {
         <Card className="p-5 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-x-8 gap-y-5">
             <div className="min-w-0">
-              <p className="label text-faint">Your agent</p>
+              <p className="label text-faint">{agents.length > 1 ? 'Your agents' : 'Your agent'}</p>
               <div className="mt-2 flex items-center gap-2.5">
-                <ChipDot color={agent.color} size={22} />
-                <h1 className="truncate text-2xl text-ink">{agent.name}</h1>
+                {agents.slice(0, 4).map((agent) => (
+                  <ChipDot key={agent.id} color={agent.color} size={22} />
+                ))}
+                <h1 className="truncate text-2xl text-ink">
+                  {agents.length > 1 ? `${agents.length} agents` : lead.name}
+                </h1>
               </div>
               <p className="mt-2 text-sm text-muted">
-                {seat ? 'Seated and playing.' : 'Not seated. Join a table below to put it in a game.'}
+                {seated.length === 0
+                  ? 'None seated. Join a table below to put one in a game.'
+                  : seated.length === agents.length
+                    ? agents.length > 1
+                      ? 'All seated and playing.'
+                      : 'Seated and playing.'
+                    : `${seated.length} of ${agents.length} seated and playing.`}
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <ButtonLink href="/agent">Edit instructions</ButtonLink>
-              {seat ? (
-                <ButtonLink tone="primary" href={`/table/${seat.tableId}`}>
+              {seated[0]?.seat ? (
+                <ButtonLink tone="primary" href={`/table/${seated[0].seat.tableId}`}>
                   Watch it play
                 </ButtonLink>
               ) : (
@@ -166,13 +186,10 @@ function AgentSummary() {
           </div>
 
           <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-5 border-t border-line pt-5 sm:grid-cols-4">
-            <Stat label="Hands played" value={agent.handsPlayed.toLocaleString('en-US')} />
-            <Stat label="Hands won" value={winRate} hint={`${agent.handsWon.toLocaleString('en-US')} of them`} />
-            <Stat
-              label="Net chips"
-              value={`${agent.chipsWon >= 0 ? '+' : ''}${formatChips(agent.chipsWon)}`}
-            />
-            <Stat label="Biggest pot" value={formatChips(agent.biggestPot)} />
+            <Stat label="Hands played" value={handsPlayed.toLocaleString('en-US')} />
+            <Stat label="Hands won" value={winRate} hint={`${handsWon.toLocaleString('en-US')} of them`} />
+            <Stat label="Net chips" value={`${chipsWon >= 0 ? '+' : ''}${formatChips(chipsWon)}`} />
+            <Stat label="Biggest pot" value={formatChips(biggestPot)} />
           </dl>
         </Card>
       </div>

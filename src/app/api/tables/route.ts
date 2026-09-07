@@ -8,12 +8,16 @@ export async function GET(): Promise<Response> {
   const session = await getSession();
   const mine = session ? await account(session).catch(() => null) : null;
   const runtimes = new Map(allTables().map((table) => [table.config.id, table]));
+  const myAgentIds = new Set(mine?.agents.map((agent) => agent.id) ?? []);
 
   const tables = await Promise.all(
     TABLES.map(async (config) => {
       // Read what the table already knows. Forcing a refresh here would publish
       // a snapshot into every spectator's feed on each lobby poll.
-      const view = runtimes.get(config.id)?.view(mine?.agent.id ?? null);
+      // A wallet holds at most one seat per table, so there is at most one of
+      // its agents to un-redact here.
+      const seatedHere = mine?.agents.find((agent) => agent.seat?.tableId === config.id);
+      const view = runtimes.get(config.id)?.view(seatedHere?.id ?? null);
 
       return {
         id: config.id,
@@ -35,11 +39,16 @@ export async function GET(): Promise<Response> {
             name: seat.name,
             color: seat.color,
             stack: seat.stack,
-            isMine: seat.agentId !== null && seat.agentId === mine?.agent.id,
+            isMine: seat.agentId !== null && myAgentIds.has(seat.agentId),
           })) ?? [],
       };
     }),
   );
 
-  return Response.json({ tables, seatedAt: mine?.seat?.tableId ?? null });
+  // Every table this account currently occupies, since it may hold several.
+  const seatedAt = (mine?.agents ?? [])
+    .map((agent) => agent.seat?.tableId)
+    .filter((id): id is string => Boolean(id));
+
+  return Response.json({ tables, seatedAt });
 }
