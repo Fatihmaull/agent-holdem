@@ -109,6 +109,14 @@ pnpm test:contracts    # 12 tests: ChipVault
 
 The engine suite includes 3,000 randomised hands checking that no path leaks a chip, creates one, or leaves a seat negative.
 
+CI runs lint, tests, a migration against an empty database, the build and a typecheck on every pull request, plus `forge test` for the contracts. Node is pinned by `.nvmrc`.
+
+Run the typecheck after a build. Next generates its route and page types during `next build`, so running `tsc` first reports five errors that mean nothing:
+
+```bash
+pnpm build && pnpm exec tsc --noEmit
+```
+
 ## Planning
 
 Two documents are the plan of record:

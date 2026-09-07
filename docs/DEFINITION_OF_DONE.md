@@ -19,9 +19,12 @@ Every pull request, no exceptions, including one-line fixes.
       fails without the fix.
 - [ ] `pnpm lint` passes with no new suppressions.
 - [ ] `pnpm build` succeeds.
-- [ ] `pnpm exec tsc --noEmit` reports nothing new. Five `RouteContext` /
-      `PageProps` / `LayoutProps` errors are expected outside a build — Next
-      generates those types during `pnpm build`. Anything else is yours.
+- [ ] `pnpm exec tsc --noEmit` is clean. Run it **after** `pnpm build`: Next
+      generates the `RouteContext`, `PageProps` and `LayoutProps` types during
+      a build, so running it first shows five errors that mean nothing. CI runs
+      it in that order and expects zero.
+- [ ] CI is green. A red check is not "done with a known failure" — it is not
+      done.
 
 **It was actually tried**
 

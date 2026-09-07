@@ -131,8 +131,11 @@ within the week.
 
 - On every pull request: install, `pnpm lint`, `pnpm test`, `pnpm build`.
 - A Postgres service container so DB-backed tests can run when C4 lands.
-- `pnpm test:contracts` when `contracts/` changed, with the forge-std submodule
-  checked out.
+- `forge test` with the forge-std submodule checked out. Runs on **every** pull
+  request rather than only when `contracts/` changed: a required check that is
+  skipped never reports, and the pull request then waits forever on a check
+  that will never arrive. The suite is small enough that this costs less than
+  the trap.
 - `main` protected: no direct pushes, CI green and one approval required.
 - Under ten minutes, or people will start ignoring it.
 
