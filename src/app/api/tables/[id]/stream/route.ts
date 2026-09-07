@@ -19,7 +19,13 @@ export async function GET(request: Request, context: RouteContext<'/api/tables/[
   if (!runtime) return new Response('No such table.', { status: 404 });
 
   const session = await getSession();
-  const viewerAgentId = session ? await account(session).then((row) => row.agent.id).catch(() => null) : null;
+  // Hole cards are un-redacted only for the viewer's own agent at this table.
+  // A wallet holds one seat per table, so this resolves to at most one agent.
+  const viewerAgentId = session
+    ? await account(session)
+        .then((row) => row.agents.find((agent) => agent.seat?.tableId === id)?.id ?? null)
+        .catch(() => null)
+    : null;
 
   const encoder = new TextEncoder();
 

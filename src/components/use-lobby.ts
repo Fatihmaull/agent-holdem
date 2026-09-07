@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { TABLES, tableLabel } from '@/lib/economy';
 import type { TableFormat } from '@/lib/economy';
+import type { PromptBudget } from '@/lib/instructions';
 
 export interface LobbySeat {
   index: number;
@@ -20,6 +21,8 @@ export interface LobbyTable {
   smallBlind: number;
   bigBlind: number;
   buyIn: number;
+  /** Words of owner instruction a seat here may carry. */
+  wordLimit: PromptBudget;
   handNumber: number;
   live: boolean;
   pot: number;
@@ -39,6 +42,7 @@ const ROSTER: LobbyTable[] = TABLES.map((table) => ({
   smallBlind: table.smallBlind,
   bigBlind: table.bigBlind,
   buyIn: table.buyIn,
+  wordLimit: table.wordLimit,
   handNumber: 0,
   live: false,
   pot: 0,
@@ -47,8 +51,8 @@ const ROSTER: LobbyTable[] = TABLES.map((table) => ({
 
 export interface Lobby {
   tables: LobbyTable[];
-  /** The table this account's agent is sitting at, if any. */
-  seatedAt: string | null;
+  /** Every table this account has an agent at. One seat per table each. */
+  seatedAt: string[];
   /** False until the first poll lands, when seat counts are not yet known. */
   loaded: boolean;
   reload: () => void;
@@ -56,7 +60,7 @@ export interface Lobby {
 
 export function useLobby(): Lobby {
   const [tables, setTables] = useState<LobbyTable[]>(ROSTER);
-  const [seatedAt, setSeatedAt] = useState<string | null>(null);
+  const [seatedAt, setSeatedAt] = useState<string[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [reloads, setReloads] = useState(0);
 
@@ -69,11 +73,11 @@ export function useLobby(): Lobby {
 
     const poll = () => {
       fetch('/api/tables', { cache: 'no-store' })
-        .then((response) => response.json() as Promise<{ tables: LobbyTable[]; seatedAt: string | null }>)
+        .then((response) => response.json() as Promise<{ tables: LobbyTable[]; seatedAt: string[] }>)
         .then((body) => {
           if (cancelled) return;
           setTables(body.tables);
-          setSeatedAt(body.seatedAt);
+          setSeatedAt(body.seatedAt ?? []);
           setLoaded(true);
         })
         .catch(() => {});

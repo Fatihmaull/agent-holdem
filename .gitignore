@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the template the README tells you to copy, which the line above
+# would otherwise swallow.
+!.env.example
 
 # vercel
 .vercel

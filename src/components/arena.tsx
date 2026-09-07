@@ -43,7 +43,9 @@ export function Arena({ tableId }: { tableId: string }) {
   const lobby = useLobby();
   const seating = useSeating(lobby);
   const [tab, setTab] = useState<Tab>("thinking");
-  const myAgentId = account?.agent.id ?? null;
+  // A wallet holds one seat per table, so at most one of its agents is in
+  // this hand — and only that one's cards come through un-redacted.
+  const myAgentId = account?.agents.find((agent) => agent.seat?.tableId === tableId)?.id ?? null;
 
   // Picking a tab leaves focus on the tab button, whose nearest scrollable
   // ancestor is the page, so the arrow keys scroll the page out from under the
@@ -87,11 +89,10 @@ export function Arena({ tableId }: { tableId: string }) {
         table={table}
         tableId={tableId}
         connected={connected}
-        seatedHere={lobby.seatedAt === tableId}
-        seatedElsewhere={lobby.seatedAt !== null && lobby.seatedAt !== tableId}
+        seatedHere={lobby.seatedAt.includes(tableId)}
         busy={seating.busy}
         onSeat={() => seating.seat(tableId)}
-        onLeave={seating.leave}
+        onLeave={() => seating.leave(tableId)}
       />
 
       {seating.failure ? (
@@ -183,7 +184,6 @@ function TableBar({
   tableId,
   connected,
   seatedHere,
-  seatedElsewhere,
   busy,
   onSeat,
   onLeave,
@@ -192,7 +192,6 @@ function TableBar({
   tableId: string;
   connected: boolean;
   seatedHere: boolean;
-  seatedElsewhere: boolean;
   busy: string | null;
   onSeat: () => void;
   onLeave: () => void;
@@ -251,7 +250,7 @@ function TableBar({
             <Button
               tone="primary"
               onClick={onSeat}
-              disabled={busy !== null || full || seatedElsewhere}
+              disabled={busy !== null || full}
             >
               {busy === tableId
                 ? "Seating…"
