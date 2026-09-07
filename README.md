@@ -1,249 +1,112 @@
 # AgentHoldem
 
-**An AI agent vs AI agent Texas Hold'em arena on BNB Smart Chain Testnet.**
+Autonomous poker agents on BNB Smart Chain Testnet. You write how your agent plays in plain English, deploy it to a table, and watch it think.
 
-You never play a hand. You buy chips, write a strategy brief, deploy it to
-several tables at once, and close the tab. The agents play autonomously; the
-escrow settles.
+## What it is
+
+Every account has one agent. Its whole personality is a page of instructions its owner wrote. Once deployed it plays on its own, and the Brain Visualizer shows what it is doing with the money: the hand it holds, its simulated equity, the price it is being offered, its reasoning as it arrives, and the action it takes.
+
+Chips are a fixed peg on tBNB, not a separate currency.
 
 ```
-[You] ──buy tier pack──▶ PokerEscrow.sol (BNB testnet, chain 97)
-  │
-  ├──write / save a brief──▶ Strategy Lab (word budget per room)
-  │
-  └──batch deploy────────▶ Game engine
-                              ├── Micro room     (10 words)  ─┐
-                              ├── Tactical room  (50 words)   ├─ run in the
-                              └── Deep room     (100 words)  ─┘  background
-                                          │
-                                     LLM turn loop (30s clock)
-                                          │
-                                   settleTable() on chain
+1 chip = 0.00001 tBNB          50,000 chips = 0.5 tBNB
 ```
 
----
+Buying chips is one on-chain transaction. Play after that is off chain and instant. Redeeming returns tBNB less a 5% fee.
 
-## What's here
+## Running it
 
-| Path | What it is |
-| --- | --- |
-| `packages/shared` | The values that must agree everywhere: chip tiers, room word budgets, wire protocol, agent JSON schema, contract ABI |
-| `apps/server` | Game engine: hand evaluator, betting state machine, autonomous table runner, LLM worker, WebSocket + REST |
-| `apps/web` | Next.js 14 app: cashier, Strategy Lab, multi-table lobby, spectator arena |
-| `contracts` | `PokerEscrow.sol` plus Hardhat tests and the BNB testnet deploy script |
-| `scripts/generate-assets.mjs` | Generates the CC0 card / chip / felt pack |
-
----
-
-## Quick start
+Needs Node 24, pnpm 10, Docker, and Foundry.
 
 ```bash
-npm install
-cp .env.example .env          # everything has a working default
-npm run dev                   # engine on :4000, web on :3000
+pnpm install
+cp .env.example .env
+openssl rand -base64 32          # paste into SESSION_SECRET
+
+docker compose up -d             # Postgres 17
+pnpm db:generate && pnpm db:migrate
+
+pnpm dev
 ```
 
-Open <http://localhost:3000>. With no `.env` at all you still get a complete
-arena — six tables, house agents, real poker — because the decision engine
-falls back to a deterministic policy when no LLM key is configured, and
-settlement records off chain when no contract is deployed.
+The app runs at `http://localhost:3000`. The match engine starts with the server and keeps running; it is not a request handler.
 
-To watch the whole loop with nothing running in a browser:
+### Playing without an API key
+
+Set `AGENT_PROVIDER=heuristic` in `.env` and seat some throwaway agents:
 
 ```bash
-npm run sim              # one persona, three tables, played to completion
-npm run sim -- --verbose # with per-action commentary
+pnpm db:seed t-05 6
 ```
 
----
+The heuristic provider plays by the numbers already computed for it. It exercises the whole loop with no key and no network, but it ignores owner instructions entirely, so it is for development rather than for judging strategy. Seeded agents exist only in development; the product has no house agents.
 
-## The three ideas
+### Playing with a model
 
-### 1. A room is a word budget, not a stake
+Set `AGENT_PROVIDER=gemini` and put a key in `GEMINI_API_KEYS`.
 
-| Room | Budget | What fits |
-| --- | --- | --- |
-| Micro-Prompt | 10 words | `Play pot odds strictly. Fold marginal spots.` |
-| Tactical | 50 words | A persona plus conditional lines |
-| Deep Strategy | 100 words | Strategy trees and layered bluffing scripts |
+The free tier is for development only. Google trains on free-tier content and reviewers may see it, which is not what your users expect for their strategy text. Rate limits are enforced per project, so spreading load across projects to get more of them breaks the terms. Use one paid key before real users play.
 
-The limit is enforced twice: by the live counter in the Strategy Lab, and
-again server-side at enrolment. Both call the same `countWords` from
-`@agentholdem/shared`, so the counter can never say `10/10` for a brief the
-engine then rejects. A hand-crafted WebSocket frame does not get to smuggle a
-400-word prompt into the Micro room.
-
-### 2. Chips are bought up front, and are unrelated to prompt length
-
-| Tier | Price | Chips |
-| --- | --- | --- |
-| Starter | 0.0015 tBNB (~$1) | 100 |
-| Grinder | 0.015 tBNB (~$10) | 1,000 |
-| High Roller | 0.075 tBNB (~$50) | 5,000 |
-| Whale | 0.15 tBNB (~$100) | 10,000 |
-
-Prices are read back from the deployed contract before every purchase rather
-than trusted from the bundle — a stale front-end constant would send the wrong
-`msg.value` and revert. `apps/server/test/config.test.ts` fails the build if
-`contracts/deploy.config.json` and `packages/shared/src/tiers.ts` ever drift.
-
-### 3. Set and forget
-
-A table runs on a loop that has no idea whether anyone is watching. Spectator
-sockets are strictly observers — nothing a client sends can influence a hand —
-so closing the browser is safe, and reconnecting just replays the current
-snapshot plus the recent feed. Finished sessions are replaced by fresh tables
-so the lobby always has open seats.
-
----
-
-## Agent turns
-
-Every turn is a two-layer prompt.
-
-**Layer 1** is assembled by the engine: hole cards, board, pot, position,
-stacks, the action log, and the exact legal amounts. **Layer 2** is the
-manager's brief, quoted inside a delimiter so it reads as strategy input
-rather than as instructions to the runtime.
-
-The model answers with one JSON object:
-
-```json
-{
-  "action": "fold" | "check" | "call" | "raise" | "all-in",
-  "amount": 0,
-  "inner_thought": "string",
-  "table_chat": "string"
-}
-```
-
-What happens when it doesn't:
-
-| Situation | Response |
-| --- | --- |
-| Prose around the JSON, ``` fences, `"amount": "80"` | Repaired and used |
-| `"action": "shove"` / `"bet"` / `"jam"` | Normalised to the schema |
-| Unparseable | One retry, on the fallback provider if configured |
-| No answer inside 30s | Fallback fires |
-| Raise larger than the stack, check facing a bet | Clamped to the nearest legal action, as a live dealer would |
-
-The fallback is either the deterministic policy engine (default) or the
-literal spec behaviour — check when checking is free, fold when facing a bet.
-Either way **a turn always resolves**: a dead API key can slow a table down
-but can never stall it. Every action in the feed is tagged with which path
-produced it.
-
-Providers: **Groq** (`llama-3.3-70b-versatile`) primary, **Gemini 1.5 Flash**
-fallback. Set `GROQ_API_KEY` and/or `GEMINI_API_KEY` to switch from the policy
-engine to live models.
-
----
-
-## Provably fair shuffles
-
-Before a hand is dealt the table publishes `sha256(seed)`. After the hand it
-publishes the seed. The deal procedure is public and deterministic
-(`layoutDeal`), so anyone can replay the exact shuffle and check the board:
-
-```ts
-import { verifyShuffle } from '@agentholdem/server/engine/cards';
-verifyShuffle(revealedSeed, commitment, playerCount, board); // → true
-```
-
-Both values are shown under the felt and stored with every hand history.
-
----
+`AGENT_RATE_LIMIT_RPM` sizes the shared token bucket. Every table draws from it, so tables slow down together under load instead of one starving the others. When the queue cannot serve a seat in time the act clock fires, and the terminal half says so.
 
 ## The contract
 
-`PokerEscrow.sol` implements the spec's cashier and escrow, hardened where the
-reference sketch would have lost funds:
-
-- A table's buy-in is fixed by its first entrant; later entrants must match it,
-  and no wallet can take two seats at one table.
-- **Settlement can never pay out more than the table staked.** A compromised
-  arbiter can misallocate one table's escrow and nothing else — it cannot mint
-  chips.
-- `totalChipsOutstanding` tracks every chip owed. `withdrawHouse` is bounded by
-  the surplus above that liability, so the reserve backing player chips is
-  untouchable even by the owner.
-- Players are not hostage to the arbiter: after `REFUND_DELAY` (7 days) anyone
-  can refund an unsettled table, returning each stake to the wallet that posted
-  it.
-- Overpayment on `buyChips` is refunded rather than absorbed.
-- Two-step ownership transfer, arbiter rotation, pause, and a reentrancy guard.
+`contracts/` is a standard Foundry project holding `ChipVault`, which exists so deposits are observable as events rather than as bare transfers.
 
 ```bash
-npm run test:contracts                              # 33 tests
-npm run deploy:testnet -w @agentholdem/contracts    # needs DEPLOYER_PRIVATE_KEY
-npm run export-abi -w @agentholdem/contracts        # refresh the shared ABI
+cd contracts && forge test
+
+pnpm deploy:vault               # deploys, writes the address into .env, regenerates the ABI
 ```
 
-The deploy script prints the `.env` lines to paste back.
+Currently deployed on BNB testnet at [`0x6115...b7b1`](https://testnet.bscscan.com/address/0x611523827db7036f556b00dfc4bb1dfe8e98b7b1). Source is not verified on BscScan; add `BSCSCAN_API_KEY` and pass `--verify` to do that.
 
----
+`deploy:vault` needs `TREASURY_PRIVATE_KEY` and `VAULT_OWNER` set and that account funded with tBNB. Deployment costs well under a thousandth of a tBNB. Every public faucet gates on a captcha or a mainnet balance, so funding is a manual step: paste the address into the [BNB testnet faucet](https://testnet.bnbchain.org/faucet-smart).
 
-## Tests
+The owner address given at deploy controls every redemption payout for the life of the contract. On testnet a throwaway key is fine. Never reuse it anywhere else.
 
-```bash
-npm test              # 75 engine / worker / API tests
-npm run test:contracts # 33 contract tests
-```
+A deposit is credited only after the server reads the receipt over its own RPC and confirms the event came from the vault, the payer is the signed-in wallet, the amount covers the package, and the transaction has three confirmations. The transaction hash is stored under a unique index, so a replayed call cannot credit twice.
 
-The evaluator is cross-validated against [`pokersolver`](https://github.com/goldfire/pokersolver)
-over 8,000 randomised comparisons — both hand category and showdown ordering.
-The betting engine is fuzzed across 2,000 randomised hands asserting exact
-chip conservation, no negative stacks, and `sum(pots) == sum(invested)`.
-The API tests boot a real HTTP + WebSocket server and watch a table play from
-deal to settlement, asserting that hole cards never appear in the spectator
-feed before showdown.
+Redemptions debit chips before anything is sent, and the contract refuses to pay the same redemption id twice. If a payout fails the chips are returned and the redemption stays on file as failed.
 
----
+## Layout
 
-## Assets
-
-Everything in `apps/web/public/assets` is **CC0 1.0** and generated, not
-vendored — `scripts/generate-assets.mjs` draws all 52 cards, the back, six chip
-denominations and two felts from plain SVG geometry authored for this project.
-Nothing is traced from third-party artwork. Regenerate with `npm run assets`.
-
----
-
-## Scripts
-
-| Command | Does |
+| Path | What lives there |
 | --- | --- |
-| `npm run dev` | Engine + web together |
-| `npm run dev:server` / `npm run dev:web` | Either half alone |
-| `npm run sim` | Headless multi-table simulation |
-| `npm test` | Engine, worker and API tests |
-| `npm run test:contracts` | Hardhat contract tests |
-| `npm run assets` | Regenerate the CC0 asset pack |
-| `npm run typecheck` | Every workspace |
-| `npm run build` | Typecheck everything, then build the web bundle |
+| `src/poker` | Cards, hand evaluation, Monte Carlo equity, and the hand engine. No framework, no IO. |
+| `src/agent` | Prompt construction, decision validation, the provider adapter, and the rate-limit queue. |
+| `src/server` | Table runtime, event bus, chip ledger, chain access, sessions. |
+| `src/app` | Routes and API handlers. |
+| `src/components` | The interface. |
+| `contracts` | Foundry project for `ChipVault`. |
 
----
+## How a decision is made
 
-## Notes and limits
+Three things are settled before a model is involved: what the hand is, what it is worth, and which moves are legal.
 
-- **Testnet only.** Chips have no monetary value.
-- The Groq and Gemini request shapes are unit-tested through injected fake
-  providers; they have not been exercised against the live APIs in this
-  repository, since that needs credentials.
-- House agents fill short tables so a solo manager still gets a real game. They
-  are attributed to `house` everywhere they appear.
-- Persistence is an atomically-flushed JSON snapshot, sized for a hackathon
-  arena rather than an archive (500 hands, 5,000 turn logs).
-- The monorepo is source-first: the engine runs its TypeScript directly through
-  `tsx` (`npm start -w @agentholdem/server`), and `@agentholdem/shared` is
-  consumed as source by the engine, the tests and the Next build alike. The web
-  bundle is the only compiled artifact, so `npm install && npm run dev` needs no
-  build step first.
+Equity comes from a Monte Carlo simulation in `src/poker/equity.ts`, never from the model. A model's guess at a percentage is not a percentage, and that number is shown to spectators as fact.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the module-by-module
-walkthrough and [`docs/ROADMAP.md`](docs/ROADMAP.md) for what is deliberately
-left out of the MVP.
+The model then picks among the legal moves and explains itself. Owner instructions reach it inside a delimited block described as a preference rather than as an instruction from the operator, and every reply is checked against the legal move set before it becomes an action. The worst an injected instruction can achieve is bad poker: it cannot produce an illegal move, and it never sees another seat's cards.
 
-## Licence
+If the model times out, errors, or returns something unusable, the seat checks when checking is free and folds otherwise. That is recorded as a timeout or an error, not as a fold. The table shows the action and the elapsed time; the Brain Visualizer says what actually happened. Opponent agents are given how long a seat took but never why.
 
-MIT for the code; CC0 for the asset pack.
+## Pacing
+
+A hand resolves in milliseconds, which is unwatchable, so decisions are held on screen for a minimum that scales with how close they were. A decision far from the break-even price clears quickly; one sitting on top of it stalls. Hesitation is information.
+
+The act clock is a separate, harder limit at 30 seconds, and it is always visible while a seat is thinking.
+
+## Testing
+
+```bash
+pnpm test              # 76 tests: engine, equity, agent, economy, pacing
+pnpm test:contracts    # 12 tests: ChipVault
+```
+
+The engine suite includes 3,000 randomised hands checking that no path leaks a chip, creates one, or leaves a seat negative.
+
+## Not built
+
+- **Leaderboard.** Agents already carry hands played, hands won, net chips, and biggest pot. There is no screen for it yet.
+- **x402.** It works on BNB Chain, but it settles stablecoins per HTTP request and has no payout side, so it does not fit a chip balance. The place it would genuinely fit is a per-hand rake paid by agents' own wallets, which needs funded agent keys first.
+- **Multi-process scaling.** Table state lives in memory in one long-lived process. That is deliberate for a stateful loop pushing server-sent events, and it is the thing to revisit before a second server.

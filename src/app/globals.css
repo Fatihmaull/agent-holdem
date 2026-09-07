@@ -1,0 +1,711 @@
+@import 'tailwindcss';
+
+/*
+  A dark product surface, built on the conventions people already know from
+  poker lobbies and wallet apps: one neutral ramp, one accent, standard radii,
+  a 4px spacing grid. Nothing here is novel on purpose. The only place the
+  interface is allowed to look like a game is inside the table itself, where
+  the felt and the real card art live.
+
+  Agent colour is the exception and it is not in this file. Every hue that is
+  not listed here belongs to an agent and is sampled from the chip art in
+  public/chips, so colour always answers "whose is that?" and never decorates.
+*/
+
+@theme {
+  /* Neutral ramp. Very slightly green so it sits under the felt without a jump. */
+  --color-canvas: #0b0f0e;
+  --color-surface: #121816;
+  --color-surface-2: #182120;
+  --color-surface-3: #1f2b28;
+  --color-line: #26332f;
+  --color-line-strong: #35453f;
+  /*
+    The boundary of anything you can type in or toggle. A field's fill barely
+    differs from the card behind it, so the border is what identifies the
+    control and it clears the 3:1 that WCAG asks of a component boundary.
+  */
+  --color-line-input: #566f66;
+
+  --color-ink: #e9efec;
+  --color-muted: #9dada7;
+  /*
+    Help text and row subtitles carry real information, so this clears 4.5:1
+    against every fill it sits on, including a row inside a card. It is the
+    quietest colour allowed to hold a sentence.
+  */
+  --color-faint: #7a8b85;
+
+  /* One accent. Join, live, and money in. */
+  --color-accent: #17b26a;
+  --color-accent-hover: #14a05e;
+  --color-accent-soft: #0f2a20;
+  --color-accent-ink: #04140d;
+
+  --color-danger: #f0555a;
+  --color-danger-soft: #2a1214;
+  --color-warning: #f5a524;
+
+  /*
+    Whose turn it is. One colour for every seat at every table, because a table
+    where each agent gets its own "acting now" hue has six of them and reads as
+    decoration. Agent colour says whose seat this is and stops there.
+  */
+  --color-live: #f4e9c8;
+
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, 'SFMono-Regular', monospace;
+
+  --radius-card: 0.75rem;
+  --radius-control: 0.5rem;
+}
+
+:root {
+  color-scheme: dark;
+  /* The header's height, so a page can subtract it without guessing. */
+  --header-h: 3.5rem;
+  /*
+    How tall the stage is. The felt sets it and the panel beside it matches, so
+    the two columns end level and no tab in the panel can push the page taller
+    than the table it is reporting on.
+  */
+  --stage-h: max(31rem, min(72vh, 43rem));
+  /* Overwritten per seat wherever an agent owns the surface. */
+  --agent: var(--color-accent);
+
+  /*
+    Two curves, because everything that moves on a poker table is a physical
+    object and physical objects only do two things: something released settles
+    into place, and something thrown lands and overshoots before it stops.
+    Nothing here eases in and out symmetrically, because nothing on a real
+    table accelerates from rest under its own power.
+  */
+  --ease-settle: cubic-bezier(0.16, 0.9, 0.3, 1);
+  --ease-land: cubic-bezier(0.2, 1.35, 0.4, 1);
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Headings are the sans face, tightened. There is no separate display family. */
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+/*
+  Small structural label above a section or beside a figure.
+
+  Deliberately not all-caps with tracking. A column head is read, not shouted,
+  and setting every label that way flattens the hierarchy: when eight things on
+  a screen are emphasised the same way, none of them is. Weight and colour carry
+  the distinction instead, which also keeps the label legible at this size.
+*/
+.label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* A page fills the screen under the header and grows past it. Pages scroll. */
+.page {
+  min-height: calc(100dvh - var(--header-h));
+}
+
+/* Focus has to survive on the canvas, on a card and on the cloth alike. */
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+/* Reasoning arrives a token at a time; the caret marks where it is up to. */
+@keyframes caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  55%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.caret::after {
+  content: '';
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-left: 0.12em;
+  vertical-align: -0.15em;
+  background: var(--agent);
+  animation: caret 1.05s steps(1, end) infinite;
+}
+
+/*
+  A card comes from somewhere. There is a dealer in the middle of this table, so
+  a hole card travels out of the middle to the seat it belongs to, and the seats
+  across the felt are dealt away from the viewer rather than six hands all
+  dropping straight down in place at once. The vector is set per seat; anything
+  that does not set one keeps the plain drop.
+*/
+@keyframes deal {
+  from {
+    opacity: 0;
+    transform: translate(var(--deal-x, 0px), var(--deal-y, -22px)) rotate(-7deg) scale(0.88);
+  }
+  55% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dealt {
+  animation: deal 460ms var(--ease-settle) backwards;
+}
+
+/*
+  A card that is turned over is turned over. The board and an opponent's hand at
+  showdown are the two moments in a hand when a card stops being face down, and
+  both earn the beat: a card that fades into its face reads as a picture being
+  swapped, and a card that rotates onto its face reads as somebody being shown.
+*/
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: perspective(700px) translateX(-24px) rotateY(-96deg) scale(0.94);
+  }
+  50% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: perspective(700px) rotateY(0deg);
+  }
+}
+
+.revealed {
+  animation: reveal 520ms var(--ease-settle) backwards;
+}
+
+/*
+  A hand that is out of play is pushed back to the middle. Without this a fold
+  is the cards ceasing to exist, which is the one thing that never happens at a
+  table: they go somewhere, and watching them go is how a spectator catches a
+  fold they were not looking at.
+*/
+@keyframes muck {
+  from {
+    opacity: 0.9;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translate(var(--deal-x, 0px), var(--deal-y, -18px)) rotate(9deg) scale(0.72);
+  }
+}
+
+.mucked {
+  animation: muck 360ms cubic-bezier(0.45, 0, 0.9, 0.5) forwards;
+}
+
+/*
+  Chips crossing the cloth, from a seat to the middle and back again.
+
+  The figures on this table already say how much moved. What a figure cannot say
+  is that it moved, and a table where money changes hands with nothing passing
+  between them reads as a scoreboard rather than as a game. The token stays a
+  token on purpose: a countable pile would be a second and less exact answer to
+  "how much", and the figure is the one that has to be believed.
+*/
+@keyframes chip-fly {
+  0% {
+    opacity: 0;
+    transform: translate(var(--fly-x, 0px), var(--fly-y, 0px)) scale(0.55);
+  }
+  12% {
+    opacity: 1;
+  }
+  50% {
+    transform: translate(calc(var(--fly-x, 0px) * 0.5), calc(var(--fly-y, 0px) * 0.5)) translateY(-18px)
+      scale(0.85);
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+.chip-flight {
+  border-radius: 50%;
+  background: #d9c48a;
+  box-shadow:
+    inset 0 0 0 2.5px rgba(0, 0, 0, 0.35),
+    0 2px 5px rgba(0, 0, 0, 0.55);
+  animation: chip-fly 620ms cubic-bezier(0.34, 0.68, 0.32, 1) both;
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.entering {
+  animation: slide-in 200ms ease-out backwards;
+}
+
+/* A figure that just changed gets one pulse, then stays still. */
+@keyframes settle {
+  0% {
+    transform: translateY(-6px);
+  }
+  60% {
+    transform: translateY(1px);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+.settling {
+  animation: settle 420ms cubic-bezier(0.3, 1.4, 0.5, 1);
+}
+
+/*
+  The room the table stands in. Nearly black, and barely lit, so the only thing
+  with any colour in it is the table.
+*/
+.felt {
+  background: radial-gradient(120% 90% at 50% 0%, #0e1a17 0%, #080f0d 60%, #060b0a 100%);
+}
+
+/*
+  The table: one flat field of cloth inside a raised rail. Flat on purpose. A
+  gradient across the middle of a poker table competes with the cards lying on
+  it, and the cards are the only thing there worth looking at.
+*/
+.cloth {
+  border-radius: 50%;
+  background: #1b6b56;
+  box-shadow:
+    inset 0 0 60px rgba(0, 0, 0, 0.22),
+    /* the rail, and the thin lift along its top */ 0 0 0 15px #2c4a52,
+    0 0 0 16px rgba(255, 255, 255, 0.09),
+    0 22px 50px -20px rgba(0, 0, 0, 0.85);
+}
+
+/* The recess the community cards are dealt into. */
+.board-recess {
+  background: rgba(0, 0, 0, 0.13);
+}
+
+/*
+  A seat's nameplate, and the states it can be in. Every state is drawn the same
+  colour whichever agent is sitting there, so a spectator learns one signal
+  instead of one per opponent.
+*/
+.plate {
+  /* One line of strip. The plate is sized without it and reaches over it. */
+  --strip-h: 1.3rem;
+  --strip-reach: 0px;
+  position: relative;
+  border-radius: 0.625rem;
+  background: #16323a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  transition: filter 180ms ease;
+}
+
+/*
+  A seat with something to say is a taller object than the plate that holds its
+  name, because the strip hangs below the plate's own box. Every edge a seat
+  draws is drawn here instead of on the plate, over a box that reaches down far
+  enough to take the strip in: a ring that stopped at the plate would run a lit
+  line straight through the middle of the seat and cut the strip loose from the
+  name it belongs to.
+*/
+.plate::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: calc(-1 * var(--strip-reach));
+  left: 0;
+  /* Not inherited: the plate squares off the edge the strip covers, and this
+     box is the one that has to come back round underneath it. */
+  border-radius: 0.625rem;
+  box-shadow: 0 3px 10px -3px rgba(0, 0, 0, 0.65);
+  pointer-events: none;
+  transition:
+    box-shadow 180ms ease,
+    bottom 260ms cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+/*
+  The bottom edge of a plate with a strip under it is not an edge of anything:
+  it is the middle of the seat. It squares off there so the round corner falls
+  at the bottom of the strip instead, where the seat actually ends, and no
+  crescent of cloth is left in the join.
+*/
+.has-strip {
+  --strip-reach: var(--strip-h);
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* An empty seat is a recess in the cloth, so it casts nothing. */
+.plate-open::after {
+  display: none;
+}
+
+/*
+  Whose turn it is, breathing rather than lit. A static ring is a state; a ring
+  that moves is a clock running, and the seat on the clock is the one thing on
+  this table a spectator should never have to hunt for. The keyframes carry the
+  same shadow the rule does, so switching the animation off leaves the ring.
+*/
+@keyframes live-breathe {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 2px var(--color-live),
+      0 0 16px -8px var(--color-live);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px var(--color-live),
+      0 0 26px -2px var(--color-live);
+  }
+}
+
+.plate-live::after {
+  box-shadow:
+    0 0 0 2px var(--color-live),
+    0 0 20px -6px var(--color-live);
+  animation: live-breathe 2.1s ease-in-out infinite;
+}
+
+/*
+  Taking the pot. One flash and then it holds, because the seat keeps the ring
+  until the next hand and a plate that pulsed for thirty seconds would be the
+  loudest thing on a table where nothing is happening.
+*/
+@keyframes won-flash {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.plate-won {
+  animation: won-flash 640ms var(--ease-land);
+}
+
+.plate-won::after {
+  box-shadow:
+    0 0 0 2px var(--color-warning),
+    0 0 22px -6px var(--color-warning);
+}
+
+/* Out of the hand, so out of the light. It fades down rather than dropping. */
+.plate-out {
+  filter: grayscale(0.9) brightness(0.6);
+}
+
+.plate-open {
+  border-radius: 0.625rem;
+  background: rgba(0, 0, 0, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/*
+  The strip along the bottom of a plate that says what the seat did. It lines
+  its corners up with the plate and carries the plate's own colour darkened, so
+  a seat is one object from any distance even though the strip hangs outside
+  the plate's box and the plate is sized by the name and the figure alone.
+*/
+.strip {
+  display: block;
+  border-radius: 0 0 0.625rem 0.625rem;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/*
+  The window the strip drops through: one line high because it takes its height
+  from the strip, and clipping, so a strip pushed up by its own height is out of
+  sight rather than drawn over the plate. It carries the strip's colour so the
+  overshoot at the end of the drop uncovers the strip and not the cloth.
+*/
+.strip-mask {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  height: var(--strip-h);
+  overflow: hidden;
+  border-radius: 0 0 0.625rem 0.625rem;
+  background: #10242a;
+}
+
+.strip-inline {
+  border-radius: 9999px;
+}
+
+.strip-quiet {
+  background: #10242a;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.strip-money {
+  background: #10242a;
+  color: #4ade9a;
+}
+
+.strip-won {
+  background: var(--color-warning);
+  color: #1a1005;
+}
+
+/*
+  Out from under the plate. It travels its own height and no further, so the
+  eye reads it as having been there all along and only now shown, which is what
+  separates a seat acting from a seat being redrawn.
+*/
+@keyframes strip-drop {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.strip-drop {
+  animation: strip-drop 260ms cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
+}
+
+/*
+  The button, sitting on the corner of a plate rather than beside it. It is
+  passed to the left every hand, and the pass is the clearest signal a table
+  gives that one hand ended and another began, so it arrives rather than
+  appearing. The translate is repeated in the keyframes because the animated
+  transform replaces the one the layout sets, it does not add to it.
+*/
+@keyframes button-in {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.2) rotate(-140deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) scale(1) rotate(0deg);
+  }
+}
+
+.dealer-pin {
+  border-radius: 50%;
+  line-height: 0;
+  box-shadow:
+    0 0 0 2px #16323a,
+    0 2px 6px rgba(0, 0, 0, 0.5);
+  animation: button-in 440ms var(--ease-land) backwards;
+}
+
+/* The chip on a pot, at the size type is. Not the chip art, which is a photo. */
+.chip-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 50%;
+  background: #d9c48a;
+  box-shadow: inset 0 0 0 1.5px rgba(0, 0, 0, 0.35);
+}
+
+.chip-dot-lg {
+  width: 0.85rem;
+  height: 0.85rem;
+  box-shadow:
+    inset 0 0 0 2.5px rgba(0, 0, 0, 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/*
+  An action lands hard and then holds. Overshooting on the way in is what makes
+  it register out of the corner of an eye, which is the whole job: the strip is
+  read by somebody who was looking at a different seat when it changed.
+*/
+@keyframes badge-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.94);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(0) scale(1.03);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.badge-pop {
+  animation: badge-pop 260ms cubic-bezier(0.2, 1.4, 0.4, 1) backwards;
+}
+
+/* Money arriving in the middle. One beat, on the pot only. */
+@keyframes pot-hit {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/*
+  Held back so the pot reacts when the chips reach it rather than when the event
+  arrives. The figure underneath is already rolling up over roughly the same
+  stretch, so the number and the object agree about when the money landed.
+*/
+.pot-hit {
+  animation: pot-hit 380ms cubic-bezier(0.3, 1.3, 0.5, 1) 300ms both;
+}
+
+/* The live dot, on tables that are dealing right now. */
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.live-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dealt,
+  .revealed,
+  .mucked,
+  .chip-flight,
+  .entering,
+  .settling,
+  .badge-pop,
+  .strip-drop,
+  .pot-hit,
+  .plate-live::after,
+  .plate-won,
+  .dealer-pin,
+  .live-dot,
+  .caret::after {
+    animation: none;
+  }
+
+  /* Nothing travels, so nothing that only exists in flight is drawn at all. */
+  .chip-flight,
+  .mucked {
+    display: none;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+  }
+}
+
+/*
+  The two native controls. Both keep their real element, because a select and a
+  checkbox that a browser owns behave correctly on a phone and with a keyboard;
+  they only need to stop looking like light-mode controls on a dark card.
+*/
+.select-field {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none' stroke='%239dada7' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.625rem center;
+  background-size: 0.625rem;
+  padding-right: 1.75rem;
+}
+
+.checkbox-field {
+  appearance: none;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid var(--color-line-input);
+  border-radius: 0.25rem;
+  background-color: var(--color-surface-2);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 0.75rem;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.checkbox-field:checked {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%2304140d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.2l2.4 2.4 4.6-5'/%3E%3C/svg%3E");
+}
+
+/* Wide content scrolls inside itself. The page body never scrolls sideways. */
+.scroll-x {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+.scroll-y {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}

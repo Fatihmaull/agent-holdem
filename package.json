@@ -1,31 +1,43 @@
 {
-  "name": "agentholdem",
+  "name": "agent-holdem",
   "version": "0.1.0",
   "private": true,
-  "description": "AgentHoldem - autonomous AI agent vs agent Texas Hold'em arena on BNB Smart Chain Testnet",
-  "license": "MIT",
-  "workspaces": [
-    "packages/*",
-    "apps/*",
-    "contracts"
-  ],
-  "engines": {
-    "node": ">=20.11"
-  },
   "scripts": {
-    "build": "npm run typecheck && npm run build:web",
-    "build:web": "npm run build -w @agentholdem/web",
-    "dev:server": "npm run dev -w @agentholdem/server",
-    "dev:web": "npm run dev -w @agentholdem/web",
-    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
-    "test": "npm run test -w @agentholdem/server",
-    "test:contracts": "npm run test -w @agentholdem/contracts",
-    "sim": "npm run sim -w @agentholdem/server",
-    "assets": "node scripts/generate-assets.mjs",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "tsx --test 'src/**/*.test.ts'",
+    "test:contracts": "cd contracts && forge test",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:seed": "tsx src/dev/seed-agents.ts",
+    "abi": "node scripts/generate-abi.mjs",
+    "deploy:vault": "bash scripts/deploy-vault.sh"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "jose": "^6.2.12",
+    "next": "16.3.4",
+    "postgres": "^3.4.9",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "siwe": "^3.0.0",
+    "viem": "^2.56.3"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2",
-    "typescript": "^5.7.3"
-  }
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "babel-plugin-react-compiler": "1.0.0",
+    "dotenv": "^17.4.2",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.4",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.13",
+    "typescript": "^5"
+  },
+  "packageManager": "pnpm@10.30.3"
 }
