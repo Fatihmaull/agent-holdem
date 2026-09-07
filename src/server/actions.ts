@@ -2,6 +2,7 @@ import { and, eq, isNotNull, sql as raw } from 'drizzle-orm';
 import { db } from '../db/client';
 import { agents, depositIntents, ledgerEntries, redemptions, seats, users } from '../db/schema';
 import { chipsToWei, packageById, quoteRedemption, tableById, weiToChips } from '../lib/economy';
+import { checkInstructions } from '../lib/instructions';
 import { PayoutUncertain, REQUIRED_CONFIRMATIONS, observeDeposit, payOut, vaultAddress } from './chain';
 import { bytes32ToIntent, intentToBytes32 } from '../lib/intent';
 import type { Session } from './auth';
@@ -73,14 +74,45 @@ export async function account(session: Session): Promise<Account> {
 const MAX_NAME = 24;
 const MAX_INSTRUCTIONS = 2000;
 
+/**
+ * Saving is also gated by the word budget, but only of the table the agent is
+ * actually sitting at. Otherwise the budget would mean nothing: an owner could
+ * take a seat at a ten-word table and immediately rewrite the field to a
+ * hundred words, and the seat would keep playing under the longer text.
+ */
 export async function saveAgent(session: Session, input: { name: string; instructions: string }): Promise<void> {
   const name = input.name.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME);
   if (name.length < 2) throw new ActionError('Give your agent a name of at least two characters.');
 
-  await db
-    .update(agents)
-    .set({ name, instructions: input.instructions.slice(0, MAX_INSTRUCTIONS), updatedAt: new Date() })
-    .where(eq(agents.userId, session.userId));
+  const instructions = input.instructions.slice(0, MAX_INSTRUCTIONS);
+
+  await db.transaction(async (tx) => {
+    const [agent] = await tx
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.userId, session.userId))
+      .limit(1);
+    if (!agent) throw new ActionError('That account has no agent.');
+
+    const [seat] = await tx
+      .select({ tableId: seats.tableId })
+      .from(seats)
+      .where(eq(seats.agentId, agent.id))
+      .limit(1);
+
+    if (seat) {
+      const table = tableById(seat.tableId);
+      const check = table ? checkInstructions(instructions, table.wordLimit) : null;
+      if (check && !check.ok) {
+        throw new ActionError(`${check.reason} Take the agent off that table to write more.`);
+      }
+    }
+
+    await tx
+      .update(agents)
+      .set({ name, instructions, updatedAt: new Date() })
+      .where(eq(agents.id, agent.id));
+  });
 }
 
 /**
@@ -94,7 +126,7 @@ export async function joinTable(session: Session, tableId: string): Promise<{ se
 
   const seatIndex = await db.transaction(async (tx) => {
     const [agent] = await tx
-      .select({ id: agents.id })
+      .select({ id: agents.id, instructions: agents.instructions })
       .from(agents)
       .where(eq(agents.userId, session.userId))
       .limit(1);
@@ -102,6 +134,11 @@ export async function joinTable(session: Session, tableId: string): Promise<{ se
 
     const [alreadySeated] = await tx.select({ id: seats.id }).from(seats).where(eq(seats.agentId, agent.id)).limit(1);
     if (alreadySeated) throw new ActionError('Your agent is already at a table. Take it off that one first.');
+
+    // The word budget is checked here, before any chips move. A seat is the
+    // only thing the budget governs, so this is the one place it has to hold.
+    const fit = checkInstructions(agent.instructions, table.wordLimit);
+    if (!fit.ok) throw new ActionError(fit.reason);
 
     const taken = await tx.select({ seatIndex: seats.seatIndex }).from(seats).where(eq(seats.tableId, tableId));
     const used = new Set(taken.map((row) => row.seatIndex));

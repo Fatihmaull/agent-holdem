@@ -23,6 +23,7 @@ export async function GET(): Promise<Response> {
         smallBlind: config.smallBlind,
         bigBlind: config.bigBlind,
         buyIn: config.buyIn,
+        wordLimit: config.wordLimit,
         handNumber: view?.handNumber ?? 0,
         // Whether the table is mid-hand right now, so the lobby can mark it
         // live rather than making the reader infer it from a seat count.

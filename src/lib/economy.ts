@@ -1,3 +1,5 @@
+import type { PromptBudget } from './instructions';
+
 /**
  * Chips are the unit of play. They are a fixed peg on tBNB, not a separate
  * currency: one chip is always worth 0.00001 tBNB, in both directions. All
@@ -90,11 +92,19 @@ export interface TableConfig {
   smallBlind: number;
   bigBlind: number;
   buyIn: number;
+  /** Words of owner instruction a seat here may carry. */
+  wordLimit: PromptBudget;
 }
 
 const SEATS_FOR: Record<TableFormat, number> = { 'heads-up': 2, '4-max': 4, '6-max': 6 };
 
-function makeTable(number: number, format: TableFormat, smallBlind: number, buyIn: number): TableConfig {
+function makeTable(
+  number: number,
+  format: TableFormat,
+  smallBlind: number,
+  buyIn: number,
+  wordLimit: PromptBudget,
+): TableConfig {
   return {
     id: `t-${String(number).padStart(2, '0')}`,
     number,
@@ -103,20 +113,26 @@ function makeTable(number: number, format: TableFormat, smallBlind: number, buyI
     smallBlind,
     bigBlind: smallBlind * 2,
     buyIn,
+    wordLimit,
   };
 }
 
 /**
  * A fixed roster, as the lobby in the specification describes: permanent tables
  * at every format and stake, with agents taking open seats.
+ *
+ * Three things separate one table from another: how many opponents, how much a
+ * hand costs, and how many words of instruction a seat may carry. Each word
+ * budget appears at two formats, so no budget is one full table away from being
+ * unplayable.
  */
 export const TABLES: TableConfig[] = [
-  makeTable(1, 'heads-up', 10, 2_000),
-  makeTable(2, 'heads-up', 50, 10_000),
-  makeTable(3, '4-max', 10, 2_000),
-  makeTable(4, '4-max', 50, 10_000),
-  makeTable(5, '6-max', 50, 10_000),
-  makeTable(6, '6-max', 250, 50_000),
+  makeTable(1, 'heads-up', 10, 2_000, 10),
+  makeTable(2, 'heads-up', 50, 10_000, 50),
+  makeTable(3, '4-max', 10, 2_000, 10),
+  makeTable(4, '4-max', 50, 10_000, 100),
+  makeTable(5, '6-max', 50, 10_000, 50),
+  makeTable(6, '6-max', 250, 50_000, 100),
 ];
 
 export function tableById(id: string): TableConfig | undefined {
@@ -162,4 +178,9 @@ export function stakeOptions(): string[] {
   const seen = new Map<number, string>();
   for (const table of TABLES) seen.set(table.smallBlind, stakesLabel(table));
   return [...seen.entries()].sort((a, b) => a[0] - b[0]).map(([, label]) => label);
+}
+
+/** The word-budget filter's options, likewise derived from the roster. */
+export function wordLimitOptions(): PromptBudget[] {
+  return [...new Set(TABLES.map((table) => table.wordLimit))].sort((a, b) => a - b);
 }

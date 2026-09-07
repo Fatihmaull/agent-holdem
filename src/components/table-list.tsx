@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { formatBlurb, formatChips, stakeOptions } from '@/lib/economy';
+import { formatBlurb, formatChips, stakeOptions, wordLimitOptions } from '@/lib/economy';
 import type { TableFormat } from '@/lib/economy';
+import { budgetBlurb, budgetLabel, countWords } from '@/lib/instructions';
 import { useAccount } from './account-context';
 import { ChipDot } from './table-art';
 import { seatsTaken, type Lobby, type LobbyTable } from './use-lobby';
@@ -36,6 +37,7 @@ export function TableList({
 }) {
   const [format, setFormat] = useState<FormatFilter>('all');
   const [stakes, setStakes] = useState('all');
+  const [words, setWords] = useState('all');
   const [openOnly, setOpenOnly] = useState(false);
 
   const counts = useMemo(() => {
@@ -48,11 +50,12 @@ export function TableList({
     const rows = lobby.tables.filter((table) => {
       if (format !== 'all' && table.format !== format) return false;
       if (stakes !== 'all' && `${table.smallBlind}/${table.bigBlind}` !== stakes) return false;
+      if (words !== 'all' && String(table.wordLimit) !== words) return false;
       if (openOnly && seatsTaken(table) >= table.seatCount) return false;
       return true;
     });
     return limit ? rows.slice(0, limit) : rows;
-  }, [lobby.tables, format, stakes, openOnly, limit]);
+  }, [lobby.tables, format, stakes, words, openOnly, limit]);
 
   return (
     <div>
@@ -81,6 +84,22 @@ export function TableList({
               {stakeOptions().map((option) => (
                 <option key={option} value={option}>
                   {option}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-2 text-sm text-muted">
+            Words
+            <select
+              value={words}
+              onChange={(event) => setWords(event.target.value)}
+              className="select-field mono h-9 rounded-control border border-line-input bg-surface pl-2.5 text-[0.8125rem] text-ink"
+            >
+              <option value="all">Any</option>
+              {wordLimitOptions().map((option) => (
+                <option key={option} value={String(option)}>
+                  {option} · {budgetLabel(option)}
                 </option>
               ))}
             </select>
@@ -118,6 +137,7 @@ export function TableList({
                 onClick={() => {
                   setFormat('all');
                   setStakes('all');
+                  setWords('all');
                   setOpenOnly(false);
                 }}
               >
@@ -167,6 +187,11 @@ function TableRow({
   const taken = seatsTaken(table);
   const full = taken >= table.seatCount;
 
+  // The server decides this, but saying so before the click saves a player a
+  // round trip and a rejection they would have to go and read.
+  const written = account ? countWords(account.agent.instructions) : 0;
+  const fits = !account || written <= table.wordLimit;
+
   return (
     <li className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-3 border-b border-line px-4 py-4 transition-colors last:border-b-0 hover:bg-surface-2/60 sm:px-5 lg:grid-cols-[minmax(11rem,1.4fr)_6rem_7rem_minmax(8rem,1fr)_6rem_11.5rem] lg:gap-4 lg:py-3.5">
       <div className="min-w-0">
@@ -176,9 +201,12 @@ function TableRow({
           </Link>
           {table.live ? <LiveBadge /> : null}
           {seatedHere ? <Badge tone="accent">Your agent</Badge> : null}
+          <Badge tone={fits ? 'neutral' : 'warning'}>{table.wordLimit} words</Badge>
         </div>
         <p className="mt-0.5 text-xs text-faint">
           {formatBlurb(table.format)}
+          {' · '}
+          {budgetBlurb(table.wordLimit)}
           <span className="lg:hidden">
             {' · '}
             {table.smallBlind}/{table.bigBlind} blinds · {formatChips(table.buyIn)} buy-in
@@ -233,7 +261,7 @@ function TableRow({
               size="sm"
               tone="primary"
               onClick={onSeat}
-              disabled={busy !== null || full || seatedElsewhere}
+              disabled={busy !== null || full || seatedElsewhere || !fits}
               title={
                 full
                   ? 'Every seat at this table is taken.'
@@ -241,10 +269,12 @@ function TableRow({
                     ? 'Your agent plays one table at a time. Leave its current table first.'
                     : !account
                       ? 'Connect a wallet to seat your agent.'
-                      : undefined
+                      : !fits
+                        ? `Your instructions are ${written} words. This table allows ${table.wordLimit}.`
+                        : undefined
               }
             >
-              {busy === table.id ? 'Seating…' : full ? 'Full' : 'Join'}
+              {busy === table.id ? 'Seating…' : full ? 'Full' : !fits ? 'Too long' : 'Join'}
             </Button>
           </>
         )}

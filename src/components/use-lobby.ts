@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { TABLES, tableLabel } from '@/lib/economy';
 import type { TableFormat } from '@/lib/economy';
+import type { PromptBudget } from '@/lib/instructions';
 
 export interface LobbySeat {
   index: number;
@@ -20,6 +21,8 @@ export interface LobbyTable {
   smallBlind: number;
   bigBlind: number;
   buyIn: number;
+  /** Words of owner instruction a seat here may carry. */
+  wordLimit: PromptBudget;
   handNumber: number;
   live: boolean;
   pot: number;
@@ -39,6 +42,7 @@ const ROSTER: LobbyTable[] = TABLES.map((table) => ({
   smallBlind: table.smallBlind,
   bigBlind: table.bigBlind,
   buyIn: table.buyIn,
+  wordLimit: table.wordLimit,
   handNumber: 0,
   live: false,
   pot: 0,

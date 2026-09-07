@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { formatChips } from '@/lib/economy';
+import { formatChips, tableById } from '@/lib/economy';
+import { PROMPT_BUDGETS, budgetLabel, countWords } from '@/lib/instructions';
 import { useAccount } from './account-context';
 import { ChipDot } from './table-art';
 import { Badge, Button, ButtonLink, Card, Stat } from './ui';
@@ -168,9 +169,11 @@ export function AgentEditor() {
               className="mt-4 w-full resize-y rounded-control border border-line-input bg-surface-2 px-4 py-3 text-sm leading-relaxed text-ink outline-none placeholder:text-faint focus:border-accent"
             />
 
+            <BudgetMeter instructions={instructions} seatedAt={seat?.tableId ?? null} />
+
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
               <span className="mono text-xs text-faint tabular-nums">
-                {instructions.length} / {MAX_INSTRUCTIONS}
+                {instructions.length} / {MAX_INSTRUCTIONS} characters
               </span>
               {status ? <span className="text-xs text-accent">{status}</span> : null}
               {failure ? <span className="text-xs text-danger">{failure}</span> : null}
@@ -231,4 +234,66 @@ export function AgentEditor() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return <div className="page mx-auto w-full max-w-[76rem] px-4 py-8 sm:px-6 sm:py-10">{children}</div>;
+}
+
+/**
+ * What the writing costs, in the unit that decides where it can sit.
+ *
+ * A table's word budget is the constraint the table is about, so the counter
+ * is not a character limit dressed up: it shows which rooms the text can
+ * currently enter, and while the agent is seated it shows the one budget that
+ * is actually binding.
+ */
+function BudgetMeter({ instructions, seatedAt }: { instructions: string; seatedAt: string | null }) {
+  const words = countWords(instructions);
+  const seatedBudget = seatedAt ? (tableById(seatedAt)?.wordLimit ?? null) : null;
+
+  if (seatedBudget !== null) {
+    const over = words - seatedBudget;
+    return (
+      <div className="mt-3 rounded-control border border-line bg-surface-2 px-3 py-2">
+        <p className="text-xs text-muted">
+          Seated at a{' '}
+          <span className="text-ink">
+            {seatedBudget}-word {budgetLabel(seatedBudget)}
+          </span>{' '}
+          table.{' '}
+          <span className={over > 0 ? 'text-danger' : 'text-muted'}>
+            {words} / {seatedBudget} words
+            {over > 0 ? ` — ${over} over, so this will not save` : ''}
+          </span>
+        </p>
+        {over > 0 ? (
+          <p className="mt-1 text-xs text-faint">
+            Cut it back, or take the agent off the table to write at full length.
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <span className="mono text-xs text-muted tabular-nums">{words} words</span>
+      <span className="text-xs text-faint">fits</span>
+      {PROMPT_BUDGETS.map((budget) => {
+        const ok = words <= budget;
+        return (
+          <span
+            key={budget}
+            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
+              ok ? 'border-accent/35 bg-accent-soft text-accent' : 'border-line bg-surface-2 text-faint'
+            }`}
+            title={
+              ok
+                ? `Can take a seat at ${budget}-word tables`
+                : `${words - budget} words too many for ${budget}-word tables`
+            }
+          >
+            {ok ? '✓' : '·'} {budget} {budgetLabel(budget)}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
