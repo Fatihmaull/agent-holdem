@@ -103,11 +103,25 @@ The act clock is a separate, harder limit at 30 seconds, and it is always visibl
 ## Testing
 
 ```bash
-pnpm test              # 76 tests: engine, equity, agent, economy, pacing
+pnpm test              # 86 tests: engine, equity, agent, economy, pacing, word budgets
 pnpm test:contracts    # 12 tests: ChipVault
 ```
 
 The engine suite includes 3,000 randomised hands checking that no path leaks a chip, creates one, or leaves a seat negative.
+
+## Planning
+
+Two documents are the plan of record:
+
+- [`docs/DEFINITION_OF_DONE.md`](docs/DEFINITION_OF_DONE.md) — the bar a change,
+  a story and the release each have to clear, and the invariants that are not
+  changed quietly.
+- [`docs/BACKLOG.md`](docs/BACKLOG.md) — what is left before a stranger can use
+  this, split into four tracks with an owner each.
+
+Short version of what is left: the vault has never been deployed, deposits are
+confirmed by the browser rather than by the server, and there is no CI, no
+hosting and no monitoring. The game itself is finished.
 
 ## Not built
 
