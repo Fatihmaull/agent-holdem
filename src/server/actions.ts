@@ -1,6 +1,6 @@
-import { and, eq, isNotNull, sql as raw } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, sql as raw } from 'drizzle-orm';
 import { db } from '../db/client';
-import { agents, depositIntents, ledgerEntries, redemptions, seats, users } from '../db/schema';
+import { agents, depositIntents, ledgerEntries, promptTemplates, redemptions, seats, users } from '../db/schema';
 import { chipsToWei, packageById, quoteRedemption, tableById, weiToChips } from '../lib/economy';
 import { checkInstructions } from '../lib/instructions';
 import { PayoutUncertain, REQUIRED_CONFIRMATIONS, observeDeposit, payOut, vaultAddress } from './chain';
@@ -113,6 +113,89 @@ export async function saveAgent(session: Session, input: { name: string; instruc
       .set({ name, instructions, updatedAt: new Date() })
       .where(eq(agents.id, agent.id));
   });
+}
+
+/**
+ * Saved instruction drafts.
+ *
+ * A drawer, not a second agent: saving one changes nothing about how the agent
+ * is playing right now. The point is that a ten-word table and a hundred-word
+ * table want different writing, and moving between them should not mean
+ * rewriting from memory.
+ */
+const MAX_TEMPLATES = 20;
+const MAX_TEMPLATE_NAME = 40;
+
+export interface SavedTemplate {
+  id: string;
+  name: string;
+  body: string;
+  updatedAt: string;
+}
+
+export async function listTemplates(session: Session): Promise<SavedTemplate[]> {
+  const rows = await db
+    .select({
+      id: promptTemplates.id,
+      name: promptTemplates.name,
+      body: promptTemplates.body,
+      updatedAt: promptTemplates.updatedAt,
+    })
+    .from(promptTemplates)
+    .where(eq(promptTemplates.userId, session.userId))
+    .orderBy(desc(promptTemplates.updatedAt));
+
+  return rows.map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() }));
+}
+
+export async function saveTemplate(
+  session: Session,
+  input: { id?: string; name: string; body: string },
+): Promise<SavedTemplate> {
+  const name = input.name.trim().replace(/\s+/g, ' ').slice(0, MAX_TEMPLATE_NAME);
+  if (name.length < 1) throw new ActionError('Give the draft a name so you can find it again.');
+  const body = input.body.slice(0, MAX_INSTRUCTIONS);
+
+  return db.transaction(async (tx) => {
+    if (input.id) {
+      const [updated] = await tx
+        .update(promptTemplates)
+        .set({ name, body, updatedAt: new Date() })
+        .where(and(eq(promptTemplates.id, input.id), eq(promptTemplates.userId, session.userId)))
+        .returning();
+      if (!updated) throw new ActionError('That draft no longer exists.');
+      return { id: updated.id, name: updated.name, body: updated.body, updatedAt: updated.updatedAt.toISOString() };
+    }
+
+    const existing = await tx
+      .select({ id: promptTemplates.id, name: promptTemplates.name })
+      .from(promptTemplates)
+      .where(eq(promptTemplates.userId, session.userId));
+
+    // Refusing a duplicate name rather than overwriting: a draft an owner
+    // spent time on should not disappear because they reused a name.
+    if (existing.some((row) => row.name === name)) {
+      throw new ActionError(`You already have a draft called “${name}”. Pick another name, or open that one and update it.`);
+    }
+    if (existing.length >= MAX_TEMPLATES) {
+      throw new ActionError(`You can keep ${MAX_TEMPLATES} drafts. Delete one to make room.`);
+    }
+
+    const [created] = await tx
+      .insert(promptTemplates)
+      .values({ userId: session.userId, name, body })
+      .returning();
+    if (!created) throw new ActionError('Could not save that draft.');
+    return { id: created.id, name: created.name, body: created.body, updatedAt: created.updatedAt.toISOString() };
+  });
+}
+
+export async function deleteTemplate(session: Session, id: string): Promise<void> {
+  const [removed] = await db
+    .delete(promptTemplates)
+    .where(and(eq(promptTemplates.id, id), eq(promptTemplates.userId, session.userId)))
+    .returning({ id: promptTemplates.id });
+  if (!removed) throw new ActionError('That draft no longer exists.');
 }
 
 /**

@@ -65,6 +65,36 @@ export const agents = pgTable(
   (table) => [uniqueIndex('agents_user_idx').on(table.userId)],
 );
 
+/**
+ * Instruction drafts an owner keeps around.
+ *
+ * An account still has exactly one agent; these are the texts it can be. A
+ * ten-word table and a hundred-word table want genuinely different writing, so
+ * without somewhere to keep both, moving between them means rewriting from
+ * memory. Saving one does not change how the agent is playing right now: it is
+ * a drawer, not a second agent.
+ */
+export const promptTemplates = pgTable(
+  'prompt_templates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    /** Owner-written text, held exactly as typed. Untrusted, like instructions. */
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Names are how an owner tells drafts apart, so two with the same name
+    // would make the list useless. Scoped per account, not globally.
+    uniqueIndex('prompt_templates_user_name_idx').on(table.userId, table.name),
+    index('prompt_templates_user_idx').on(table.userId, table.updatedAt),
+  ],
+);
+
 /** Chips the operator issued against a deposit that has not landed yet. */
 export const depositIntents = pgTable(
   'deposit_intents',
@@ -203,6 +233,11 @@ export const decisions = pgTable(
 export const usersRelations = relations(users, ({ one, many }) => ({
   agent: one(agents, { fields: [users.id], references: [agents.userId] }),
   ledger: many(ledgerEntries),
+  templates: many(promptTemplates),
+}));
+
+export const promptTemplatesRelations = relations(promptTemplates, ({ one }) => ({
+  owner: one(users, { fields: [promptTemplates.userId], references: [users.id] }),
 }));
 
 export const agentsRelations = relations(agents, ({ one }) => ({
@@ -219,3 +254,4 @@ export type Agent = typeof agents.$inferSelect;
 export type Seat = typeof seats.$inferSelect;
 export type Hand = typeof hands.$inferSelect;
 export type Decision = typeof decisions.$inferSelect;
+export type PromptTemplate = typeof promptTemplates.$inferSelect;

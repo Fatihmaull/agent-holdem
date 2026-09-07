@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { formatChips, tableById } from '@/lib/economy';
 import { PROMPT_BUDGETS, budgetLabel, countWords } from '@/lib/instructions';
 import { useAccount } from './account-context';
@@ -38,6 +38,7 @@ export function AgentEditor() {
   const [status, setStatus] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const drafts = useDrafts();
 
   if (loading) {
     return (
@@ -171,6 +172,16 @@ export function AgentEditor() {
 
             <BudgetMeter instructions={instructions} seatedAt={seat?.tableId ?? null} />
 
+            <DraftShelf
+              drafts={drafts}
+              current={instructions}
+              onLoad={(body) => {
+                setDraftInstructions(body);
+                setStatus('Loaded into the editor. Save to make it live.');
+                setFailure(null);
+              }}
+            />
+
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
               <span className="mono text-xs text-faint tabular-nums">
                 {instructions.length} / {MAX_INSTRUCTIONS} characters
@@ -294,6 +305,193 @@ function BudgetMeter({ instructions, seatedAt }: { instructions: string; seatedA
           </span>
         );
       })}
+    </div>
+  );
+}
+
+interface Draft {
+  id: string;
+  name: string;
+  body: string;
+  updatedAt: string;
+}
+
+interface Drafts {
+  list: Draft[];
+  loading: boolean;
+  error: string | null;
+  save: (name: string, body: string) => Promise<boolean>;
+  remove: (id: string) => Promise<void>;
+}
+
+/**
+ * Loads the account's saved drafts and keeps the list in step with writes.
+ *
+ * The list is external state, so it is fetched and applied in a callback
+ * rather than assigned while the effect body runs, the same way the lobby
+ * roster is polled.
+ */
+function useDrafts(): Drafts {
+  const [list, setList] = useState<Draft[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [reloads, setReloads] = useState(0);
+
+  const reload = useCallback(() => setReloads((count) => count + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch('/api/templates', { cache: 'no-store' })
+      .then((response) => (response.ok ? (response.json() as Promise<{ templates?: Draft[] }>) : null))
+      .then((body) => {
+        if (cancelled) return;
+        setList(body?.templates ?? []);
+        setLoading(false);
+      })
+      .catch(() => {
+        // A shelf that fails to load is not worth an error banner over the
+        // editor; the field itself still works.
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [reloads]);
+
+  const save = useCallback(
+    async (name: string, body: string) => {
+      setError(null);
+      const response = await fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, body }),
+      });
+      const payload = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        setError(payload.error ?? 'Could not save that draft.');
+        return false;
+      }
+      reload();
+      return true;
+    },
+    [reload],
+  );
+
+  const remove = useCallback(
+    async (id: string) => {
+      setError(null);
+      const response = await fetch(`/api/templates/${id}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        setError(payload.error ?? 'Could not delete that draft.');
+        return;
+      }
+      reload();
+    },
+    [reload],
+  );
+
+  return { list, loading, error, save, remove };
+}
+
+/**
+ * Somewhere to keep more than one way of playing.
+ *
+ * Loading a draft fills the editor and stops there — it does not change how the
+ * agent is playing until the owner saves, which keeps one click from silently
+ * altering a seat that is mid-session.
+ */
+function DraftShelf({
+  drafts,
+  current,
+  onLoad,
+}: {
+  drafts: Drafts;
+  current: string;
+  onLoad: (body: string) => void;
+}) {
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function commit() {
+    if (!name.trim()) return;
+    setBusy(true);
+    const saved = await drafts.save(name, current);
+    setBusy(false);
+    if (saved) {
+      setName('');
+      setNaming(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 border-t border-line pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div>
+          <h3 className="text-sm font-medium text-ink">Saved drafts</h3>
+          <p className="mt-0.5 text-xs text-faint">
+            Keep a short brief for the ten-word tables and a long one for the hundreds. Loading a draft only fills
+            the box above; nothing changes until you save.
+          </p>
+        </div>
+        {naming ? (
+          <div className="flex items-center gap-2">
+            <input
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void commit();
+                if (event.key === 'Escape') setNaming(false);
+              }}
+              maxLength={40}
+              placeholder="Name this draft"
+              className="h-8 w-48 rounded-control border border-line-input bg-surface-2 px-2.5 text-sm text-ink outline-none focus:border-accent"
+            />
+            <Button size="sm" tone="primary" onClick={() => void commit()} disabled={busy || !name.trim()}>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
+            <Button size="sm" onClick={() => setNaming(false)}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" onClick={() => setNaming(true)} disabled={!current.trim()}>
+            Save this as a draft
+          </Button>
+        )}
+      </div>
+
+      {drafts.error ? <p className="mt-2 text-xs text-danger">{drafts.error}</p> : null}
+
+      {drafts.loading ? null : drafts.list.length === 0 ? (
+        <p className="mt-3 text-xs text-faint">No drafts yet.</p>
+      ) : (
+        <ul className="mt-3 space-y-1.5">
+          {drafts.list.map((draft) => (
+            <li
+              key={draft.id}
+              className="flex items-center gap-3 rounded-control border border-line bg-surface-2 px-3 py-2"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm text-ink">{draft.name}</p>
+                <p className="truncate text-xs text-faint">
+                  {countWords(draft.body)} words · {draft.body || 'empty'}
+                </p>
+              </div>
+              <Button size="sm" onClick={() => onLoad(draft.body)}>
+                Load
+              </Button>
+              <Button size="sm" onClick={() => void drafts.remove(draft.id)}>
+                Delete
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
