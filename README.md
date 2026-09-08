@@ -103,13 +103,31 @@ The act clock is a separate, harder limit at 30 seconds, and it is always visibl
 ## Testing
 
 ```bash
-pnpm test              # 86 tests: engine, equity, agent, economy, pacing, word budgets
-pnpm test:contracts    # 12 tests: ChipVault
+pnpm test              # engine, equity, agent, economy, pacing, word budgets, rate limits
+pnpm test:db           # the money paths, against a real Postgres
+pnpm test:contracts    # ChipVault
 ```
 
-The engine suite includes 3,000 randomised hands checking that no path leaks a chip, creates one, or leaves a seat negative.
+`pnpm test` is pure and runs anywhere. `pnpm test:db` needs Docker: it creates
+its own database — the name from `DATABASE_URL` with `_test` appended, or
+`TEST_DATABASE_URL` if you set one — migrates it, and truncates between tests.
+It is kept out of `pnpm test` for exactly that reason, so a contributor without
+Docker is not blocked.
 
-CI runs lint, tests, a migration against an empty database, the build and a typecheck on every pull request, plus `forge test` for the contracts. Node is pinned by `.nvmrc`.
+It is where the money lives. Row locks, a unique index and conditional updates
+are what stop a deposit being credited twice or a payout being refunded after
+it landed, and none of that is testable against a fake. The suite covers
+crediting, replays and races, redemption and its three outcomes, seating and
+the one-seat-per-wallet rule, and what a shutdown mid-hand costs.
+
+The engine suite plays about 1,500 randomised hands, asserting after every
+single action that chips were neither created nor destroyed, that no stack went
+negative, and that every chip staked was awarded to somebody. Failures print
+the seed.
+
+CI runs all three, reconciles the ledger afterwards, and does a migration
+against an empty database, the build and a typecheck on every pull request.
+Node is pinned by `.nvmrc`.
 
 Run the typecheck after a build. Next generates its route and page types during `next build`, so running `tsc` first reports five errors that mean nothing:
 
@@ -126,10 +144,14 @@ Two documents are the plan of record:
   changed quietly.
 - [`docs/BACKLOG.md`](docs/BACKLOG.md) — what is left before a stranger can use
   this, split into four tracks with an owner each.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — choices that are expensive to
+  revisit, each with what would make it wrong.
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — what to do when something involving
+  money or the engine goes wrong, written for whoever is on call.
 
-Short version of what is left: the vault has never been deployed, deposits are
-confirmed by the browser rather than by the server, and there is no CI, no
-hosting and no monitoring. The game itself is finished.
+Short version of what is left: `ChipVault` has never been deployed, and there
+is no hosting. Both need somebody with a wallet and an account at a host —
+everything on this side of them is done.
 
 ## Not built
 
