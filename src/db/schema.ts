@@ -112,6 +112,15 @@ export const depositIntents = pgTable(
     /** Set once the on-chain event has been read back and credited. */
     txHash: text('tx_hash'),
     blockNumber: bigint('block_number', { mode: 'number' }),
+    /**
+     * Chain height when the intent was issued. The watcher starts its log scan
+     * from the oldest pending intent, so without this it would have to guess
+     * how far back to look and could walk past a deposit that has already been
+     * paid for. Null when the RPC was unreachable at the time, which costs
+     * nothing while the watcher is running and is why issuing an intent is not
+     * allowed to fail on it.
+     */
+    startBlock: bigint('start_block', { mode: 'number' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     creditedAt: timestamp('credited_at', { withTimezone: true }),
   },
@@ -122,6 +131,22 @@ export const depositIntents = pgTable(
     index('deposit_intents_status_idx').on(table.status),
   ],
 );
+
+/**
+ * How far the chain watchers have read.
+ *
+ * A deposit is credited from a log, and a log is only seen once, so the height
+ * already scanned has to outlive the process that scanned it. Without this a
+ * restart either re-reads the whole chain or silently skips whatever landed
+ * while it was down.
+ */
+export const chainCursors = pgTable('chain_cursors', {
+  /** Watcher name, `deposits`. One row per watcher. */
+  name: text('name').primaryKey(),
+  /** Last block fully processed. The next scan starts at this plus one. */
+  blockNumber: bigint('block_number', { mode: 'number' }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const redemptions = pgTable(
   'redemptions',
@@ -258,3 +283,5 @@ export type Seat = typeof seats.$inferSelect;
 export type Hand = typeof hands.$inferSelect;
 export type Decision = typeof decisions.$inferSelect;
 export type PromptTemplate = typeof promptTemplates.$inferSelect;
+export type DepositIntent = typeof depositIntents.$inferSelect;
+export type Redemption = typeof redemptions.$inferSelect;

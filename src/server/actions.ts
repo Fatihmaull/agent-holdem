@@ -1,11 +1,13 @@
 import { and, desc, eq, isNotNull, sql as raw } from 'drizzle-orm';
 import { db } from '../db/client';
 import { agents, depositIntents, ledgerEntries, promptTemplates, redemptions, seats, users } from '../db/schema';
-import { TABLES, chipsToWei, packageById, quoteRedemption, tableById, weiToChips } from '../lib/economy';
+import { TABLES, chipsToWei, packageById, quoteRedemption, tableById } from '../lib/economy';
 import { assignColor } from '../agent/colors';
 import { checkInstructions } from '../lib/instructions';
-import { PayoutUncertain, REQUIRED_CONFIRMATIONS, observeDeposit, payOut, vaultAddress } from './chain';
-import { bytes32ToIntent, intentToBytes32 } from '../lib/intent';
+import { PayoutUncertain, REQUIRED_CONFIRMATIONS, headBlock, observeDeposit, payOut, vaultAddress } from './chain';
+import { creditDeposit } from './deposits';
+import { logger } from './log';
+import { intentToBytes32 } from '../lib/intent';
 import type { Session } from './auth';
 import { tableRuntime } from './registry';
 import { leaveSeat } from './store';
@@ -482,6 +484,17 @@ export async function startDeposit(session: Session, packageId: string): Promise
   if (!chosen) throw new ActionError('That package does not exist.');
 
   const valueWei = chipsToWei(chosen.chips);
+
+  // Where the watcher should start looking for this deposit. Best-effort: an
+  // unreachable RPC must not stop somebody buying chips, and a running watcher
+  // is already scanning forward from its own cursor regardless.
+  let startBlock: number | null = null;
+  try {
+    startBlock = Number(await headBlock());
+  } catch (error) {
+    logger.warn('deposit.start-block-unavailable', { error: error instanceof Error ? error.message : 'unknown' });
+  }
+
   const [intent] = await db
     .insert(depositIntents)
     .values({
@@ -489,6 +502,7 @@ export async function startDeposit(session: Session, packageId: string): Promise
       packageId: chosen.id,
       chips: chosen.chips,
       expectedWei: valueWei.toString(),
+      startBlock,
     })
     .returning({ id: depositIntents.id });
 
@@ -547,14 +561,13 @@ export async function unsettledDeposits(session: Session): Promise<Array<{ inten
 }
 
 /**
- * Credits a deposit after reading it back from the chain.
+ * Credits a deposit for the player who is watching it land.
  *
- * Every check that matters happens here: the event came from our vault, the
- * payer is the signed-in wallet, the intent belongs to that same wallet, the
- * amount covers what the intent promised, and the transaction has enough
- * confirmations. The intent row is locked for the length of the transaction and
- * the credit only applies to a row that is still pending, so two requests
- * racing on the same hash cannot both pay out.
+ * The checks live in `creditDeposit`, which the background watcher uses too, so
+ * this path can never be more or less permissive than the one that runs when
+ * nobody is looking. All this adds is the impatience of a person at a screen:
+ * it reads the receipt by hash immediately rather than waiting for the next
+ * sweep, and it turns the outcome into a sentence.
  */
 export async function confirmDeposit(session: Session, txHash: string): Promise<DepositResult> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) throw new ActionError('That is not a transaction hash.');
@@ -562,71 +575,36 @@ export async function confirmDeposit(session: Session, txHash: string): Promise<
   const observed = await observeDeposit(txHash as `0x${string}`);
   if (!observed) throw new ActionError('No deposit to this vault was found in that transaction.');
 
-  if (observed.confirmations < REQUIRED_CONFIRMATIONS) {
-    throw new ActionError(
-      `Waiting for confirmations (${observed.confirmations} of ${REQUIRED_CONFIRMATIONS}). Try again shortly.`,
-    );
-  }
+  const outcome = await creditDeposit(observed, session.userId);
 
-  if (observed.payer.toLowerCase() !== session.address.toLowerCase()) {
-    throw new ActionError('That deposit was sent from a different wallet.');
-  }
-
-  const intentId = bytes32ToIntent(observed.intentId);
-
-  return db.transaction(async (tx) => {
-    // Locked for the length of the transaction. A second request for the same
-    // hash waits here rather than reading a pending row that is about to be
-    // credited out from under it.
-    const [intent] = await tx
-      .select()
-      .from(depositIntents)
-      .where(and(eq(depositIntents.id, intentId), eq(depositIntents.userId, session.userId)))
-      .limit(1)
-      .for('update');
-
-    if (!intent) throw new ActionError('That deposit does not match any request from this account.');
-    if (intent.status === 'credited') throw new ActionError('That deposit has already been credited.');
-
-    if (observed.amountWei < BigInt(intent.expectedWei)) {
-      throw new ActionError('That deposit was smaller than the package it was for.');
-    }
-
-    // Anything sent above the package price still buys chips at the same peg.
-    const chips = Math.max(intent.chips, weiToChips(observed.amountWei));
-
-    // The status is part of the condition, not just of the payload, so the
-    // credit cannot apply twice even if the lock above is ever lost.
-    const credited = await tx
-      .update(depositIntents)
-      .set({
-        status: 'credited',
+  switch (outcome.status) {
+    case 'credited':
+      logger.info('deposit.credited', {
+        intentId: outcome.intentId,
+        chips: outcome.chips,
         txHash,
-        blockNumber: Number(observed.blockNumber),
-        chips,
-        creditedAt: new Date(),
-      })
-      .where(and(eq(depositIntents.id, intentId), eq(depositIntents.status, 'pending')))
-      .returning({ id: depositIntents.id });
+        source: 'browser',
+      });
+      return { chips: outcome.chips, balance: outcome.balance };
 
-    if (credited.length === 0) throw new ActionError('That deposit has already been credited.');
+    case 'unconfirmed':
+      throw new ActionError(
+        `Waiting for confirmations (${outcome.confirmations} of ${REQUIRED_CONFIRMATIONS}). Your chips are safe — they will arrive on their own.`,
+      );
 
-    const [updated] = await tx
-      .update(users)
-      .set({ chips: raw`${users.chips} + ${chips}` })
-      .where(eq(users.id, session.userId))
-      .returning({ chips: users.chips });
+    case 'already-credited':
+      throw new ActionError('That deposit has already been credited.');
 
-    await tx.insert(ledgerEntries).values({
-      userId: session.userId,
-      delta: chips,
-      balanceAfter: updated.chips,
-      reason: 'deposit',
-      reference: txHash,
-    });
+    case 'conflict':
+      // Two deposits in one transaction. Real money, and only a person can
+      // decide which row it belongs to, so say so rather than inventing chips.
+      throw new ActionError(
+        'That transaction carries more than one deposit, so it needs to be settled by hand. Nothing is lost — keep the transaction hash.',
+      );
 
-    return { chips, balance: updated.chips };
-  });
+    default:
+      throw new ActionError(outcome.reason);
+  }
 }
 
 export interface RedemptionResult {

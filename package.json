@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "tsx --test 'src/**/*.test.ts'",
+    "test:db": "tsx src/dev/prepare-test-db.ts && tsx --test 'src/**/*.itest.ts'",
     "test:contracts": "cd contracts && forge test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",

@@ -28,6 +28,7 @@ import {
   saveStacks,
   type SeatedAgent,
 } from './store';
+import { logger } from './log';
 import type { ArenaEvent, BrainView, LogLine, SeatStatus, SeatView, TableView } from './view';
 
 export class TableRuntime {
@@ -65,8 +66,17 @@ export class TableRuntime {
   private talk = new Map<number, string>();
   private log: LogLine[] = [];
   private logSequence = 0;
-  private running = false;
+  private handEndedAt: number | null = null;
+  /** True while the loop is dealing new hands. Cleared by a drain. */
+  private dealing = false;
+  /** True while the loop function is alive, which outlives `dealing` by one hand. */
+  private looping = false;
+  /** Aborts whatever is in flight. A drain deliberately does not touch this. */
   private stopping = new AbortController();
+  /** Resolves when the loop has actually exited, so a shutdown can wait on it. */
+  private exited: Promise<void> = Promise.resolve();
+  /** Server-side log. The `log` above is the ticker spectators read. */
+  private readonly journal = logger.child({ table: this.config.id });
 
   constructor(
     readonly config: TableConfig,
@@ -121,15 +131,44 @@ export class TableRuntime {
   }
 
   start(): void {
-    if (this.running) return;
-    this.running = true;
+    if (this.looping) return;
+    this.dealing = true;
+    this.looping = true;
     this.stopping = new AbortController();
-    void this.loop();
+    this.exited = this.loop();
   }
 
+  /**
+   * Stops dealing new hands and lets the one in progress finish.
+   *
+   * This is what a deploy should do. Aborting instead throws away a hand that
+   * players are in the middle of: the chips are safe either way, because an
+   * incomplete hand is never stored, but every bet in it is undone and the
+   * table visibly jumps backwards.
+   */
+  drain(): void {
+    this.dealing = false;
+  }
+
+  /** Gives up on the hand in progress. Nothing incomplete is ever stored. */
   stop(): void {
-    this.running = false;
+    this.dealing = false;
     this.stopping.abort();
+  }
+
+  /** Resolves once the loop has exited, whether it was drained or aborted. */
+  async finished(): Promise<void> {
+    await this.exited;
+  }
+
+  /** Whether this table is still dealing. The health check asks. */
+  get live(): boolean {
+    return this.dealing;
+  }
+
+  /** When this table last finished a hand, so a stalled engine is visible. */
+  get lastHandAt(): number | null {
+    return this.handEndedAt;
   }
 
   /**
@@ -249,7 +288,19 @@ export class TableRuntime {
   }
 
   private async loop(): Promise<void> {
-    while (this.running) {
+    try {
+      while (this.dealing) {
+        await this.deal();
+      }
+    } finally {
+      this.looping = false;
+      this.journal.info('table.stopped', { handNumber: this.handNumber });
+    }
+  }
+
+  /** One turn of the loop: get ready, play a hand if we can, wait. */
+  private async deal(): Promise<void> {
+    {
       // Pick up where this table left off, so numbering never collides with
       // what is already stored. Guessing zero here makes every later save
       // violate the unique hand number and the table deals into a void, so a
@@ -258,20 +309,30 @@ export class TableRuntime {
         try {
           this.handNumber = await lastHandNumber(this.config.id);
         } catch (error) {
-          console.error(`[${this.config.id}] cannot read the hand number`, error);
+          this.journal.error('table.hand-number-unreadable', { error: describeError(error) });
           this.publish({ type: 'idle', reason: 'Reconnecting to the match record.' });
           await this.pause(4_000);
-          continue;
+          return;
         }
       }
 
-      await this.refreshSeats();
+      // A table whose seats cannot be read has nothing to deal to. Letting this
+      // throw would end the loop for the life of the process, so a database
+      // blip would silently retire the table instead of pausing it.
+      try {
+        await this.refreshSeats();
+      } catch (error) {
+        this.journal.error('table.seats-unreadable', { error: describeError(error) });
+        this.publish({ type: 'idle', reason: 'Reconnecting to the match record.' });
+        await this.pause(4_000);
+        return;
+      }
 
       // A cash-out is mid-flight. Its seat still shows a stack that the payout
       // is about to claim, so no hand may be built around it.
       if (this.leaving > 0) {
         await this.pause(200);
-        continue;
+        return;
       }
 
       if (this.seated.length < 2) {
@@ -280,7 +341,7 @@ export class TableRuntime {
         this.deadline = null;
         this.publish({ type: 'idle', reason: 'Waiting for a second agent to sit down.' });
         await this.pause(4_000);
-        continue;
+        return;
       }
 
       try {
@@ -288,12 +349,13 @@ export class TableRuntime {
       } catch (error) {
         // Spectators get a plain sentence; the detail goes to the server log,
         // because a driver's error text is not something to put on the ticker.
-        console.error(`[${this.config.id}] hand ${this.handNumber} abandoned`, error);
+        this.journal.error('table.hand-abandoned', { handNumber: this.handNumber, error: describeError(error) });
         this.note('That hand could not be completed and was abandoned.');
       } finally {
         // Whatever happened, no hand is holding chips any more. Leaving this
         // set would block every cash-out at this table until the next deal.
         this.handLive = false;
+        this.handEndedAt = Date.now();
       }
 
       await this.pause(BETWEEN_HANDS_MS);
@@ -351,7 +413,7 @@ export class TableRuntime {
     let eventCursor = state.events.length;
     let street: Street = state.street;
 
-    while (state.toAct !== null && this.running) {
+    while (state.toAct !== null && !this.stopping.signal.aborted) {
       const position = state.toAct;
       const chair = this.chairOf(position);
       const agent = lineup[position];
@@ -685,4 +747,8 @@ function describeAction(name: string, action: string, amount: number): string {
 
 function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? `${error.message}${error.stack ? `\n${error.stack}` : ''}`.slice(0, 600) : 'unknown error';
 }
