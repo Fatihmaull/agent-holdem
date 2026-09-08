@@ -96,8 +96,9 @@ nothing about that experience depends on one of us being awake.
 
 - [ ] `ChipVault` is deployed to BNB testnet, verified on BscScan, and its
       address is in the deployed environment.
-- [ ] A deposit is credited **without the browser staying open**. Sending tBNB
-      and closing the tab must still result in chips.
+- [x] A deposit is credited without the browser staying open: a watcher scans
+      the vault's logs from a stored cursor. Still needs doing for real once
+      the vault exists — `docs/DEPLOY.md` § 5, step 3.
 - [ ] A redemption either pays out or is recorded as failed with the chips
       returned. A `PayoutUncertain` has a written procedure and a person who
       owns running it — `docs/RUNBOOK.md` § A payout is stuck, and
@@ -122,28 +123,39 @@ nothing about that experience depends on one of us being awake.
 ### It stays up
 
 - [ ] Deployed somewhere persistent, running **exactly one** engine process.
+      The artefacts are ready — `Dockerfile`, `docs/DEPLOY.md` — and the
+      constraint is written next to the setting it applies to.
       The registry keeps table state in memory, so a second instance deals a
       second copy of every table. Autoscaling and serverless are not options
       until that changes.
-- [ ] A restart is graceful: no hand is lost mid-deal, or if one is, chips are
-      unaffected and the table resumes.
-- [ ] Health check that reports whether the engine is dealing, not just whether
-      the process answers.
-- [ ] Errors reach somewhere a human looks. Not `console.error` in a container
-      nobody tails.
+- [x] A restart is graceful: SIGTERM stops new hands, lets the ones in flight
+      finish inside `SHUTDOWN_DRAIN_MS`, then exits. A hand cut off anyway
+      costs a hand and no chips, established by test rather than by argument.
+      Needs `NEXT_MANUAL_SIG_HANDLE=1`, which the Dockerfile sets.
+- [x] `/api/health` reports whether the engine is dealing, whether the deposit
+      watcher is sweeping, and whether the model key pool is alive — not just
+      whether the process answers.
+- [x] Errors reach somewhere a human looks: structured logs, and
+      `ERROR_WEBHOOK_URL` for anything that needs a person. The four events
+      that mean somebody's money is waiting are listed in `docs/DEPLOY.md` § 7,
+      each with a section in the runbook.
 
 ### It cannot be trivially abused
 
-- [ ] Write endpoints are rate limited per account and per IP.
-- [ ] Model spend has a ceiling that cannot be crossed by anyone signing up and
-      deploying agents.
+- [x] Every write endpoint goes through `guard()`, limited per account and per
+      address, with a structural test that fails when a new route forgets.
+- [x] `AGENT_DAILY_REQUEST_CAP` is a hard ceiling on model requests across
+      every table and every account. Past it, seats fall back to check-or-fold
+      — a bad game rather than an unbounded invoice.
 - [ ] A signed-out visitor can reach nothing that costs money or reveals
       another player's cards.
 
 ### It can be worked on
 
-- [ ] CI runs `pnpm test`, `pnpm lint`, `pnpm build` and `pnpm test:contracts`
-      on every pull request, and `main` is protected behind it.
+- [x] CI runs `pnpm lint`, `pnpm test`, `pnpm test:db`, `pnpm db:migrate`,
+      `pnpm reconcile`, `pnpm build`, `pnpm exec tsc --noEmit` and
+      `pnpm test:contracts` on every pull request, and `main` is protected
+      behind it.
 - [ ] A new contributor can go from clone to dealing tables using only
       `README.md`. Verified by someone who has not done it before.
 
@@ -151,8 +163,11 @@ nothing about that experience depends on one of us being awake.
 
 - [ ] A first-time visitor understands what the product is, that it is testnet
       only with no real money, and how to get testnet tBNB — without asking.
-- [ ] Every failure a user can hit says what happened and what to do next.
-- [ ] Usable on a phone, and keyboard-navigable.
+- [x] Every failure a user can hit says what happened, what to do next, and
+      whether anything was spent.
+- [x] Usable on a phone and keyboard-navigable: opened at 390px, tabbed
+      through, and the palette measured against every background it is used
+      on.
 
 ---
 

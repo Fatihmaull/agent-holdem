@@ -299,11 +299,11 @@ export async function leaderboard(minimumHands = 20, limit = 50): Promise<Ranked
 }
 
 /** How many agents exist at all, so an empty board can say why it is empty. */
-export async function agentCensus(): Promise<{ total: number; qualified: number }> {
+export async function agentCensus(minimumHands = 20): Promise<{ total: number; qualified: number }> {
   const [row] = await db
     .select({
       total: raw<number>`count(*)::int`,
-      qualified: raw<number>`count(*) filter (where ${agents.handsPlayed} >= 20)::int`,
+      qualified: raw<number>`count(*) filter (where ${agents.handsPlayed} >= ${minimumHands})::int`,
     })
     .from(agents);
   return row ?? { total: 0, qualified: 0 };

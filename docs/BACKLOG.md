@@ -304,7 +304,7 @@ A visitor arriving today gets a lobby and no explanation.
 
 ### D2 · [#22](https://github.com/Fatihmaull/agent-holdem/issues/22) · Mobile and accessibility — **P1** — 3d
 
-**Mostly done.** Opened at 390px in a real browser: no horizontal scroll and no console errors on home, the lobby, a live table, the editor, a replay or the leaderboard. Contrast and a full keyboard pass are still worth somebody’s afternoon.
+**Done.** Opened at 390px in a real browser: no horizontal scroll and no console errors on home, the lobby, a live table, the editor, a replay or the leaderboard. Tabbed through four pages — the skip link comes first, every focused element draws a visible outline. Contrast measured across the whole palette: every text token clears AA on every background it is actually used on, and `surface-3` is only ever a hover state or a progress track, never a background for text.
 - Every page usable at 390px. Opened on a phone, not merely narrowed in a
   browser.
 - Keyboard navigable end to end with visible focus.

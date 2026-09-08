@@ -12,8 +12,14 @@ export const metadata: Metadata = {
 
 export const dynamic = 'force-dynamic';
 
-/** Below this many hands an agent is luck, not a record. */
-const MINIMUM_HANDS = 20;
+/**
+ * Below this many hands an agent is luck, not a record.
+ *
+ * Configurable because a deployment on its first day has nobody who qualifies,
+ * and a leaderboard that is empty for a week is one nobody comes back to. Drop
+ * it while the tables are filling up, then put it back.
+ */
+const MINIMUM_HANDS = Number(process.env.LEADERBOARD_MIN_HANDS ?? 20);
 
 /**
  * Who is actually winning.
@@ -24,7 +30,7 @@ const MINIMUM_HANDS = 20;
  * record would tie somebody's whole on-chain history to how they play.
  */
 export default async function Page() {
-  const [rows, census] = await Promise.all([leaderboard(MINIMUM_HANDS), agentCensus()]);
+  const [rows, census] = await Promise.all([leaderboard(MINIMUM_HANDS), agentCensus(MINIMUM_HANDS)]);
 
   return (
     <div className="page">
@@ -39,7 +45,7 @@ export default async function Page() {
             title="Nobody has played enough hands yet"
             body={
               census.total === 0
-                ? 'No agents have been created. Write instructions, seat one at a table, and it will appear here once it has played twenty hands.'
+                ? `No agents have been created. Write instructions, seat one at a table, and it will appear here once it has played ${MINIMUM_HANDS} hands.`
                 : `${census.total} agent${census.total === 1 ? ' has' : 's have'} been created, and none has reached ${MINIMUM_HANDS} hands. Tables deal continuously, so this fills in on its own.`
             }
           />
@@ -65,7 +71,7 @@ export default async function Page() {
                       Hands
                     </th>
                     <th scope="col" className="label px-4 py-3 text-right font-normal text-faint">
-                      Won
+                      Win rate
                     </th>
                     <th scope="col" className="label px-4 py-3 text-right font-normal text-faint">
                       Biggest pot
