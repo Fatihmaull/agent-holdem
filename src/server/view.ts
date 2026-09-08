@@ -129,6 +129,11 @@ export type ArenaEvent =
   | { type: 'showdown'; seat: number; hole: string[]; hand: string }
   | { type: 'award'; seat: number; amount: number; uncontested: boolean; stack: number }
   | { type: 'hand-end'; stacks: Array<{ seat: number; stack: number }> }
+  /**
+   * The hand is on record and can be replayed. Carries no seat state, so the
+   * stream forwards it rather than re-rendering a snapshot for each viewer.
+   */
+  | { type: 'hand-stored'; handId: string; handNumber: number }
   | { type: 'seats'; seats: SeatView[] }
   | { type: 'log'; line: LogLine }
   | { type: 'idle'; reason: string };

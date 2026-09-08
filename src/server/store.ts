@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, max, sql as raw } from 'drizzle-orm';
+import { and, desc, eq, gte, isNotNull, max, sql as raw } from 'drizzle-orm';
 import { db } from '../db/client';
 import { agents, decisions, hands, ledgerEntries, seats, users } from '../db/schema';
 import type { HandEvent, HandState } from '../poker/engine';
@@ -208,4 +208,103 @@ export async function latestHand(): Promise<{
 
 export async function decisionsForHand(handId: string) {
   return db.select().from(decisions).where(eq(decisions.handId, handId)).orderBy(decisions.id);
+}
+
+export interface StoredHand {
+  id: string;
+  tableId: string;
+  handNumber: number;
+  button: number;
+  lineup: unknown;
+  board: unknown;
+  pots: unknown;
+  events: unknown;
+  startedAt: Date;
+  endedAt: Date | null;
+}
+
+/** One finished hand, whole, for the replayer. */
+export async function handById(id: string): Promise<StoredHand | null> {
+  const [row] = await db
+    .select({
+      id: hands.id,
+      tableId: hands.tableId,
+      handNumber: hands.handNumber,
+      button: hands.button,
+      lineup: hands.lineup,
+      board: hands.board,
+      pots: hands.pots,
+      events: hands.events,
+      startedAt: hands.startedAt,
+      endedAt: hands.endedAt,
+    })
+    .from(hands)
+    .where(and(eq(hands.id, id), isNotNull(hands.endedAt)))
+    .limit(1);
+  return row ?? null;
+}
+
+/** The most recent finished hand at one table, for "replay the last hand". */
+export async function lastHandAt(tableId: string): Promise<{ id: string; handNumber: number } | null> {
+  const [row] = await db
+    .select({ id: hands.id, handNumber: hands.handNumber })
+    .from(hands)
+    .where(and(eq(hands.tableId, tableId), isNotNull(hands.endedAt)))
+    .orderBy(desc(hands.handNumber))
+    .limit(1);
+  return row ?? null;
+}
+
+export interface RankedAgent {
+  id: string;
+  name: string;
+  color: string;
+  handsPlayed: number;
+  handsWon: number;
+  chipsWon: number;
+  biggestPot: number;
+  /** Where it is sitting now, if it is. */
+  tableId: string | null;
+}
+
+/**
+ * The leaderboard.
+ *
+ * Ranked by net chips rather than by hands won, because winning many small
+ * pots and losing one large one is a losing agent and the other order would
+ * call it a winner.
+ *
+ * A minimum number of hands keeps an agent that won its first pot and stopped
+ * off the top of the table. It is not a scoring rule, it is the difference
+ * between a ranking and a list of lucky first hands.
+ */
+export async function leaderboard(minimumHands = 20, limit = 50): Promise<RankedAgent[]> {
+  const rows = await db
+    .select({
+      id: agents.id,
+      name: agents.name,
+      color: agents.color,
+      handsPlayed: agents.handsPlayed,
+      handsWon: agents.handsWon,
+      chipsWon: agents.chipsWon,
+      biggestPot: agents.biggestPot,
+      tableId: seats.tableId,
+    })
+    .from(agents)
+    .leftJoin(seats, eq(seats.agentId, agents.id))
+    .where(gte(agents.handsPlayed, minimumHands))
+    .orderBy(desc(agents.chipsWon), desc(agents.handsPlayed))
+    .limit(limit);
+  return rows;
+}
+
+/** How many agents exist at all, so an empty board can say why it is empty. */
+export async function agentCensus(): Promise<{ total: number; qualified: number }> {
+  const [row] = await db
+    .select({
+      total: raw<number>`count(*)::int`,
+      qualified: raw<number>`count(*) filter (where ${agents.handsPlayed} >= 20)::int`,
+    })
+    .from(agents);
+  return row ?? { total: 0, qualified: 0 };
 }

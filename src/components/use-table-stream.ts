@@ -20,6 +20,13 @@ export interface StreamState {
   actionKeys: Record<number, number>;
   /** Steps whenever the pot grows, so the figure can react to money arriving. */
   potKey: number;
+  /**
+   * The most recent hand this table has finished and stored, so a spectator
+   * can open what they have just watched. Null until one completes while the
+   * page is open — a snapshot cannot carry it, because a snapshot describes
+   * the hand being played rather than the one before it.
+   */
+  lastHand: { id: string; number: number } | null;
 }
 
 const initial: StreamState = {
@@ -31,6 +38,7 @@ const initial: StreamState = {
   moved: [],
   actionKeys: {},
   potKey: 0,
+  lastHand: null,
 };
 
 type Action = { type: 'event'; event: ArenaEvent } | { type: 'connected'; value: boolean };
@@ -227,6 +235,9 @@ function reduce(state: StreamState, action: Action): StreamState {
           }),
         },
       };
+
+    case 'hand-stored':
+      return { ...state, lastHand: { id: event.handId, number: event.handNumber } };
 
     case 'log':
       if (!table) return state;

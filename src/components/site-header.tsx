@@ -12,6 +12,7 @@ import { Button } from './ui';
 const NAV = [
   { href: '/', label: 'Home', short: 'Home' },
   { href: '/tables', label: 'Tables', short: 'Tables' },
+  { href: '/leaderboard', label: 'Leaderboard', short: 'Ranks' },
   { href: '/agent', label: 'Your agent', short: 'Agent' },
 ];
 

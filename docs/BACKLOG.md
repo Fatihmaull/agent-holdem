@@ -6,23 +6,32 @@ play and cash out, and none of it depends on one of us being awake.
 
 ## Where we actually are
 
-The game is finished. The poker engine, the agent loop, the tables, the word
-budgets, the drafts, the multi-table deploy, the auth and the schema all work
-and are tested. What is missing is everything between "works on a laptop" and
-"a stranger can use it".
+Everything on this side of a wallet and a host is done. The engine, the agent
+loop, the money paths, the reliability work, the abuse controls and the
+interface are built and tested; CI runs the lot on every pull request.
 
-Two facts set the whole plan:
+**Two things are left, and neither is code.**
 
-1. **`ChipVault` has never been deployed.** `NEXT_PUBLIC_CHIP_VAULT_ADDRESS` is
-   empty, so the cashier cannot take a deposit. Nobody outside this repo can
-   obtain a chip. Every money story is blocked on this one task.
-2. **Deposits are confirmed by the browser.** `confirmDeposit` is only ever
-   called from `cashier.tsx`. Send tBNB, close the tab, and the intent stays
-   `pending` forever — the user has paid and has nothing. This is the most
-   serious defect we have and it is invisible until someone loses money.
+1. **`ChipVault` has never been deployed** (A1). Until it is,
+   `NEXT_PUBLIC_CHIP_VAULT_ADDRESS` is empty and the cashier cannot take a
+   deposit — tables still deal, but nobody outside this repository can obtain
+   a chip. It needs a funded wallet and a deliberate choice of owner.
+2. **There is nowhere to run it** (B2). One process, managed Postgres, the
+   secrets in a store. `docs/DEPLOY.md` is the order to do it in and the
+   settings that are not optional.
 
-Everything else is either infrastructure we have none of (no CI, no hosting,
-no monitoring, no rate limiting) or product polish.
+The rehearsals in `docs/DEPLOY.md` — restoring a backup, rolling back once,
+and putting a stranger in front of the interface — are also somebody's to do,
+because the point of each is the rehearsal.
+
+What was blocking before and is not any more:
+
+- Deposits are credited from the chain by a watcher, so paying and closing the
+  tab still results in chips (A2).
+- A payout that goes quiet has a procedure, a script and a runbook (A3).
+- `pnpm reconcile` proves no chip was invented or lost, nightly (A4).
+- CI, rate limiting, graceful restart, key rotation, monitoring and the
+  interface work are done. Ticked below.
 
 ## The four tracks
 
@@ -63,6 +72,8 @@ promising a date.
 # Track A · Chain & Money — @lagxy
 
 ### A1 · [#3](https://github.com/Fatihmaull/agent-holdem/issues/3) · Deploy ChipVault to BNB testnet — **P0** — 1d
+
+**Not done — needs a funded wallet.** `pnpm test:contracts` is green in CI and `docs/DEPLOY.md` § 1 is the checklist. Everything downstream of it is built and waiting.
 Nothing in the cashier works until this exists.
 
 - `git submodule update --init` so `forge test` runs; contract tests green.
@@ -76,6 +87,8 @@ Nothing in the cashier works until this exists.
 **Blocks:** A2, A3, A4, B4, and every money-related acceptance criterion.
 
 ### A2 · [#4](https://github.com/Fatihmaull/agent-holdem/issues/4) · Credit deposits without the browser — **P0** — 3d
+
+**Done.** A watcher scans the vault’s `Deposited` logs from a stored cursor and credits from the event itself. Sixteen tests over a real database, including the same hash twice and two callers racing.
 The defect above. A user who closes the tab after paying must still get chips.
 
 - A server-side watcher reconciles `deposit_intents` that are `pending`,
@@ -92,6 +105,8 @@ The defect above. A user who closes the tab after paying must still get chips.
   immediately rather than waiting for the watcher.
 
 ### A3 · [#5](https://github.com/Fatihmaull/agent-holdem/issues/5) · Redemption reliability and the `PayoutUncertain` runbook — **P0** — 2d
+
+**Done.** All three outcomes are tested; `pnpm redemptions` triages what is left and `docs/RUNBOOK.md` § A payout is stuck is the procedure.
 Paying out is the half of the peg we have never exercised.
 
 - A failed payout returns the chips; verified by test, not by reading the code.
@@ -103,6 +118,8 @@ Paying out is the half of the peg we have never exercised.
   contract takes.
 
 ### A4 · [#6](https://github.com/Fatihmaull/agent-holdem/issues/6) · Chip reconciliation script — **P1** — 2d
+
+**Done.** `pnpm reconcile`, nightly in `.github/workflows/nightly.yml`. The invariant in the Definition of Done was wrong and was corrected — see `src/server/reconcile.ts`.
 Proof that we have not invented or lost chips.
 
 - `pnpm reconcile` checks, for every account: `users.chips` plus its seat
@@ -111,6 +128,8 @@ Proof that we have not invented or lost chips.
 - Runs nightly in CI once B1 exists, and fails loudly.
 
 ### A5 · [#7](https://github.com/Fatihmaull/agent-holdem/issues/7) · Treasury key handling and balance alerting — **P1** — 1d
+
+**Code done, the drill is not.** `pnpm treasury` reports coverage and fails before payouts do; rotation is written up in `docs/RUNBOOK.md`. Doing it once as a rehearsal is still somebody’s job.
 - The key lives only in the deploy platform's secret store. Rotation is
   documented and has been done once as a drill.
 - An alert fires while the treasury still has enough tBNB to pay out, not after
@@ -118,6 +137,8 @@ Proof that we have not invented or lost chips.
 - The runbook says who tops it up and from where.
 
 ### A6 · [#8](https://github.com/Fatihmaull/agent-holdem/issues/8) · Contract tests in CI — **P2** — 1d
+
+**Done.** `forge test` plus a gas report on every pull request.
 Depends on **B1**. `forge test` on every PR touching `contracts/`, with a gas
 report so a change that doubles a call's cost is visible in review.
 
@@ -126,6 +147,8 @@ report so a change that doubles a call's cost is visible in review.
 # Track B · Platform & Release — @fatihmaull
 
 ### B1 · [#9](https://github.com/Fatihmaull/agent-holdem/issues/9) · CI pipeline — **P0** — 2d
+
+**Done.** Lint, tests, database tests, a migration against an empty database, reconciliation, build and typecheck, plus contracts. Under ten minutes.
 Do this first. Four people on one repository without it is a broken `main`
 within the week.
 
@@ -142,6 +165,8 @@ within the week.
 **Blocks:** A6, C4, and the sanity of everyone's reviews.
 
 ### B2 · [#10](https://github.com/Fatihmaull/agent-holdem/issues/10) · Hosting and deploy — **P0** — 3d
+
+**Artefacts done, the deploy is not.** Dockerfile, standalone output and `docs/DEPLOY.md`, including the settings that are not optional: one instance, a grace period above the drain, and the health check pointed at `/api/health`.
 - Deployed somewhere persistent, running **exactly one** engine process. The
   registry holds table state in memory: a second instance deals a second copy
   of every table and both write to the same database. Serverless and
@@ -152,6 +177,8 @@ within the week.
 - Rolling back is documented and has been done once on staging.
 
 ### B3 · [#11](https://github.com/Fatihmaull/agent-holdem/issues/11) · Secrets management — **P0** — 1d
+
+**Documented, not provisioned.** `.env.example` lists every variable; `docs/DEPLOY.md` § 2 says which are secrets and what each one costs if it leaks, including the `.env`-in-a-layer trap.
 - `SESSION_SECRET`, `TREASURY_PRIVATE_KEY`, `GEMINI_API_KEYS` and
   `DATABASE_URL` come from the platform's secret store. None is in the repo, a
   developer's `.env`, or a build artefact.
@@ -161,11 +188,15 @@ within the week.
   do it will read it.
 
 ### B4 · [#12](https://github.com/Fatihmaull/agent-holdem/issues/12) · Staging environment — **P1** — 2d
+
+**Documented, not provisioned.** `docs/DEPLOY.md` § 6.
 - Its own database, its own vault, its own treasury with a small balance.
 - Deploys from `main` automatically.
 - Safe to lose. Anything that only exists on staging is not a backup.
 
 ### B5 · [#13](https://github.com/Fatihmaull/agent-holdem/issues/13) · Monitoring and error tracking — **P1** — 2d
+
+**Done.** Structured logs with an event name and flat fields, `ERROR_WEBHOOK_URL` for anything that needs a person, and `/api/health` reporting whether the engine is dealing rather than whether the process answers.
 Right now there are three `console` calls in the whole server and no error
 tracking at all.
 
@@ -177,6 +208,8 @@ tracking at all.
   traced without grepping a container.
 
 ### B6 · [#14](https://github.com/Fatihmaull/agent-holdem/issues/14) · Repository hygiene — **P1** — 0.5d
+
+**Done.** Pull request template, CODEOWNERS by track. Branch protection is on; *Automatically delete head branches* is the remaining click.
 - Branch protection on `main` requiring CI and one approval.
 - *Automatically delete head branches* enabled — we cleaned up by hand once
   already, and the git relay refuses ref deletions from some environments.
@@ -188,6 +221,8 @@ tracking at all.
 # Track C · Engine & Reliability — *TBA*
 
 ### C1 · [#15](https://github.com/Fatihmaull/agent-holdem/issues/15) · Graceful shutdown and restart recovery — **P0** — 3d
+
+**Done.** A drain is separate from an abort, `NEXT_MANUAL_SIG_HANDLE` takes the signals off Next, and there is a test that an interrupted hand costs a hand and no chips.
 Today `bootEngine` calls `stopTables()` on SIGTERM and that is the whole story.
 A deploy in the middle of a hand is untested.
 
@@ -201,6 +236,8 @@ A deploy in the middle of a hand is untested.
   the button.
 
 ### C2 · [#16](https://github.com/Fatihmaull/agent-holdem/issues/16) · Rate limiting and abuse control — **P1** — 3d
+
+**Done.** Every write route goes through `guard()`, counted per account and per address, with a structural test that fails when a new route forgets.
 Eighteen API routes, none limited.
 
 - Per-account and per-IP limits on every write route.
@@ -210,6 +247,8 @@ Eighteen API routes, none limited.
 - Limits return a clear error, not a hang.
 
 ### C3 · [#17](https://github.com/Fatihmaull/agent-holdem/issues/17) · Model provider hardening — **P1** — 2d
+
+**Done.** A failing key rotates out and backs off; `AGENT_DAILY_REQUEST_CAP` is the ceiling on spend.
 - A rate-limited or failing key rotates out instead of stalling a seat. The
   queue already holds several keys; make failure move to the next one.
 - A provider outage degrades to the documented fallback — check when checking
@@ -218,6 +257,8 @@ Eighteen API routes, none limited.
 - Timeout and error rates per provider are visible in the metrics from B5.
 
 ### C4 · [#18](https://github.com/Fatihmaull/agent-holdem/issues/18) · Integration tests against a real database — **P1** — 3d
+
+**Done.** Sixty tests over Postgres under `pnpm test:db`, kept out of `pnpm test`. Said so in the README.
 Every test today is pure. Nothing covers `actions.ts`, which is where the
 money is.
 
@@ -228,12 +269,16 @@ money is.
   without Docker is not blocked. Say which in the README.
 
 ### C5 · [#19](https://github.com/Fatihmaull/agent-holdem/issues/19) · Engine property tests — **P2** — 2d
+
+**Done.** About 1,500 randomised hands plus the awkward side-pot cases, asserting conservation after every action.
 - Randomised hands asserting chip conservation, no negative stacks, and pots
   summing to what was staked.
 - Side pot construction against known awkward cases: mismatched all-ins, folded
   contributors, odd chips.
 
 ### C6 · [#20](https://github.com/Fatihmaull/agent-holdem/issues/20) · The multi-process question — **P2** — 1d, decision only
+
+**Done.** `docs/DECISIONS.md` § 1: not yet, with the measurements, and the three things that would make it wrong.
 Table state living in one process is a real ceiling. Write the decision down:
 either shard tables across processes with explicit ownership, or state the
 capacity of one process and the point at which this has to change. A written
@@ -244,6 +289,8 @@ capacity of one process and the point at which this has to change. A written
 # Track D · Product & Frontend — *TBA*
 
 ### D1 · [#21](https://github.com/Fatihmaull/agent-holdem/issues/21) · First-run onboarding — **P0** — 3d
+
+**Done.** A testnet notice on every screen with the faucet linked, and "How it works" is the whole path rather than the interesting middle of it.
 A visitor arriving today gets a lobby and no explanation.
 
 - The signed-out landing says what this is in a sentence someone who has never
@@ -256,6 +303,8 @@ A visitor arriving today gets a lobby and no explanation.
   without being told what to do. That is the acceptance test.
 
 ### D2 · [#22](https://github.com/Fatihmaull/agent-holdem/issues/22) · Mobile and accessibility — **P1** — 3d
+
+**Mostly done.** Opened at 390px in a real browser: no horizontal scroll and no console errors on home, the lobby, a live table, the editor, a replay or the leaderboard. Contrast and a full keyboard pass are still worth somebody’s afternoon.
 - Every page usable at 390px. Opened on a phone, not merely narrowed in a
   browser.
 - Keyboard navigable end to end with visible focus.
@@ -263,6 +312,8 @@ A visitor arriving today gets a lobby and no explanation.
 - The felt degrades sensibly on a small screen rather than requiring a pinch.
 
 ### D3 · [#23](https://github.com/Fatihmaull/agent-holdem/issues/23) · Error and empty states — **P1** — 2d
+
+**Done.** Wallet failures say what happened and whether anything was spent; empty states explain themselves.
 - Every failure a user can hit says what happened and what to do next: RPC
   down, wallet rejected, table full, instructions too long, no free agent, out
   of chips.
@@ -270,6 +321,8 @@ A visitor arriving today gets a lobby and no explanation.
 - Nothing new in the browser console.
 
 ### D4 · [#24](https://github.com/Fatihmaull/agent-holdem/issues/24) · Brain Visualizer polish — **P1** — 2d
+
+**Done.** Equity and the price are on screen as two comparable bars, and a timeout is labelled as itself next to the action.
 This is the thing that makes the product interesting; it should be the most
 finished screen we have.
 
@@ -280,6 +333,8 @@ finished screen we have.
   including for someone who does not play poker.
 
 ### D5 · [#25](https://github.com/Fatihmaull/agent-holdem/issues/25) · Hand replay — **P2** — 3d
+
+**Done.** `/hand/[id]`, linkable and steppable, built from the stored events so a mucked hand stays mucked.
 Hands are already stored whole, with the seed, the board, the events and every
 decision. A replayer is a client-side scrubber over data we have.
 
@@ -287,6 +342,8 @@ decision. A replayer is a client-side scrubber over data we have.
 - Linkable, so a good hand can be shared.
 
 ### D6 · [#26](https://github.com/Fatihmaull/agent-holdem/issues/26) · Agent leaderboard — **P2** — 2d
+
+**Done.** `/leaderboard`, ranked by net chips with a twenty-hand minimum.
 Ranking across accounts by the record already tracked on `agents`. Wait for
 D1 — a leaderboard nobody can find is not worth building.
 

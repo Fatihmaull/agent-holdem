@@ -214,22 +214,31 @@ export class ModelQueue {
   }
 }
 
-let shared: ModelQueue | null = null;
+/**
+ * One queue for the whole process, and it has to be the same one everywhere.
+ *
+ * Hung off globalThis for the reason the table registry is: a module-scoped
+ * singleton is per module graph, so a `next dev` reload makes a second queue
+ * and the rate limit quietly doubles — and a route handler asking for the
+ * metrics gets a fresh queue that has never granted anything, which is how a
+ * health check comes to report a model pool that is not the one dealing hands.
+ */
+const globalForQueue = globalThis as unknown as { __agentholdemQueue?: ModelQueue };
 
 export function modelQueue(): ModelQueue {
-  if (shared) return shared;
+  if (globalForQueue.__agentholdemQueue) return globalForQueue.__agentholdemQueue;
   const keys = (process.env.GEMINI_API_KEYS ?? '')
     .split(',')
     .map((key) => key.trim())
     .filter(Boolean);
   const rpm = Number(process.env.AGENT_RATE_LIMIT_RPM ?? 10);
   const cap = process.env.AGENT_DAILY_REQUEST_CAP;
-  shared = new ModelQueue(
+  globalForQueue.__agentholdemQueue = new ModelQueue(
     keys.length ? keys : ['missing-key'],
     rpm,
     Date.now,
     (ms) => new Promise((r) => setTimeout(r, ms)),
     cap === undefined ? null : Number(cap),
   );
-  return shared;
+  return globalForQueue.__agentholdemQueue;
 }

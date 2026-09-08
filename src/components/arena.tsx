@@ -38,6 +38,7 @@ export function Arena({ tableId }: { tableId: string }) {
     moved,
     potKey,
     actionKeys,
+    lastHand,
   } = useTableStream(tableId);
   const { account } = useAccount();
   const lobby = useLobby();
@@ -93,6 +94,7 @@ export function Arena({ tableId }: { tableId: string }) {
         busy={seating.busy}
         onSeat={() => seating.seat(tableId)}
         onLeave={() => seating.leave(tableId)}
+        lastHand={lastHand}
       />
 
       {seating.failure ? (
@@ -187,6 +189,7 @@ function TableBar({
   busy,
   onSeat,
   onLeave,
+  lastHand,
 }: {
   table: TableView | null;
   tableId: string;
@@ -195,6 +198,8 @@ function TableBar({
   busy: string | null;
   onSeat: () => void;
   onLeave: () => void;
+  /** The hand this table has just finished, once one has. */
+  lastHand: { id: string; number: number } | null;
 }) {
   const seated = table?.seats.filter((seat) => seat.agentId).length ?? 0;
   const full = table ? seated >= table.seatCount : false;
@@ -259,6 +264,16 @@ function TableBar({
                   : "Join this table"}
             </Button>
           )}
+          {/*
+            Appears the moment a hand is stored rather than on a reload, so
+            "go back and look at that" is one click while it is still the
+            thing somebody was watching.
+          */}
+          {lastHand ? (
+            <ButtonLink href={`/hand/${lastHand.id}`} tone="ghost">
+              Replay hand {lastHand.number}
+            </ButtonLink>
+          ) : null}
           <ButtonLink href="/tables" tone="ghost">
             Other tables
           </ButtonLink>

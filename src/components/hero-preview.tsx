@@ -23,6 +23,7 @@ type Feed =
   | { mode: 'live'; tableId: string }
   | {
       mode: 'replay';
+      handId: string;
       tableId: string;
       handNumber: number;
       lineup: Array<{ seatIndex: number; name: string }>;
@@ -90,7 +91,18 @@ export function HeroPreview() {
         />
       </div>
 
-      {tableId ? (
+      {/*
+        A replay is a finished hand, and the useful next click is to step
+        through it rather than to open a table that is no longer playing it.
+      */}
+      {feed.mode === 'replay' ? (
+        <Link
+          href={`/hand/${feed.handId}`}
+          className="shrink-0 border-t border-line px-4 py-2.5 text-[0.8125rem] font-medium text-accent transition-colors hover:bg-surface-2"
+        >
+          Step through this hand →
+        </Link>
+      ) : tableId ? (
         <Link
           href={`/table/${tableId}`}
           className="shrink-0 border-t border-line px-4 py-2.5 text-[0.8125rem] font-medium text-accent transition-colors hover:bg-surface-2"

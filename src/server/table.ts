@@ -653,7 +653,7 @@ export class TableRuntime {
     const { lineup, state, seed, startedAt, recorded } = context;
     const potSize = totalPot(state);
 
-    await saveHand({
+    const handId = await saveHand({
       tableId: this.config.id,
       handNumber: this.handNumber,
       seed,
@@ -667,6 +667,10 @@ export class TableRuntime {
       })),
       decisions: recorded,
     });
+
+    // Published as soon as it is stored, so a spectator can open the hand they
+    // have just watched rather than waiting for a page to be reloaded.
+    this.publish({ type: 'hand-stored', handId, handNumber: this.handNumber });
 
     await recordResults(
       lineup.map((seat, position) => {
