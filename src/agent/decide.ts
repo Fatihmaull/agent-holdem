@@ -132,18 +132,26 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
 
   let streamed = '';
   try {
-    streamed = await queue.run(async (apiKey) => {
-      let text = '';
-      for await (const chunk of provider.stream(
-        { system: SYSTEM_PROMPT, user: buildPrompt(context), maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.9 },
-        apiKey,
-        signal,
-      )) {
-        text += chunk;
-        options.onToken?.(chunk);
-      }
-      return text;
-    }, signal);
+    // Raced against the signal rather than merely handed it. A provider is
+    // asked to stop and is trusted to; one that does not — a hung socket, a
+    // driver that awaits something before its first signal check — would
+    // otherwise hold this seat open past its clock and past a shutdown, and
+    // one wedged seat stops its table dealing for the life of the process.
+    streamed = await Promise.race([
+      queue.run(async (apiKey) => {
+        let text = '';
+        for await (const chunk of provider.stream(
+          { system: SYSTEM_PROMPT, user: buildPrompt(context), maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.9 },
+          apiKey,
+          signal,
+        )) {
+          text += chunk;
+          options.onToken?.(chunk);
+        }
+        return text;
+      }, signal),
+      abandonedOn(signal),
+    ]);
   } catch (error) {
     clearTimeout(timer);
     const timedOut = clock.signal.aborted;
@@ -188,6 +196,16 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
 }
 
 class ClockExpired extends Error {}
+
+/** Rejects the moment `signal` aborts, and never resolves. */
+function abandonedOn(signal: AbortSignal): Promise<never> {
+  return new Promise((_resolve, reject) => {
+    const stop = () =>
+      reject(signal.reason instanceof Error ? signal.reason : new Error('the decision was abandoned'));
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
+  });
+}
 
 /**
  * Guards for spots where no judgement is involved: a move with no alternative,

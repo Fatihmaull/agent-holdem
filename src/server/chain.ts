@@ -229,6 +229,22 @@ export async function intentConsumed(intentId: `0x${string}`): Promise<boolean> 
   });
 }
 
+/**
+ * Whether the vault has already paid a redemption.
+ *
+ * The contract refuses to pay the same id twice, so this is the authority on a
+ * payout whose result we never saw. It is what turns a `PayoutUncertain` from a
+ * guess into a decision.
+ */
+export async function redemptionSettled(redemptionId: `0x${string}`): Promise<boolean> {
+  return chainClient().readContract({
+    address: vaultAddress(),
+    abi: chipVaultAbi,
+    functionName: 'redemptionPaid',
+    args: [redemptionId],
+  });
+}
+
 /** What the treasury has left to pay redemptions with. */
 export async function treasuryBalanceWei(): Promise<bigint> {
   return chainClient().getBalance({ address: vaultAddress() });

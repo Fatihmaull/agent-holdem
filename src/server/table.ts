@@ -82,6 +82,13 @@ export class TableRuntime {
     readonly config: TableConfig,
     private readonly provider: ModelProvider,
     private readonly queue: ModelQueue,
+    /**
+     * Multiplies every beat. Exactly one caller passes anything but 1: the
+     * shutdown tests, which need a hand to start and finish inside a test
+     * rather than at the pace a spectator reads it. Nothing in production
+     * touches it, so the pacing a player sees is still the one in `pacing.ts`.
+     */
+    private readonly paceScale = 1,
   ) {}
 
   async refreshSeats(): Promise<void> {
@@ -272,7 +279,8 @@ export class TableRuntime {
     this.publish({ type: 'log', line });
   }
 
-  private async pause(ms: number): Promise<void> {
+  private async pause(milliseconds: number): Promise<void> {
+    const ms = milliseconds * this.paceScale;
     if (ms <= 0) return;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, ms);
@@ -475,6 +483,17 @@ export class TableRuntime {
           this.publish({ type: 'reasoning', seat: chair, delta });
         },
       });
+
+      // A shutdown is not a decision. Aborting mid-request makes `decide` fall
+      // back to check-or-fold, which is right when a seat runs out its own
+      // clock and wrong when we ran out of ours: folding a player's hand
+      // because we are deploying costs them the pot. So the fallback is
+      // discarded and the hand is abandoned, which costs a hand and no chips.
+      if (this.stopping.signal.aborted) {
+        this.handLive = false;
+        this.note('The table stopped mid-hand. That hand does not count.');
+        return;
+      }
 
       // Hesitation is information, so a close decision is held on screen longer
       // than a routine one. The model's own latency counts toward the floor.

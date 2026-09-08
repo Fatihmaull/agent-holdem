@@ -100,12 +100,24 @@ nothing about that experience depends on one of us being awake.
       and closing the tab must still result in chips.
 - [ ] A redemption either pays out or is recorded as failed with the chips
       returned. A `PayoutUncertain` has a written procedure and a person who
-      owns running it.
+      owns running it — `docs/RUNBOOK.md` § A payout is stuck, and
+      `pnpm redemptions` lists what is waiting on one.
 - [ ] The treasury key is not in the repo, not in a developer's `.env`, and not
       recoverable from a build artefact.
-- [ ] Chip totals reconcile: for every account, `users.chips` plus its seat
-      stacks equals the sum of its ledger entries. Checked by a script, not by
-      eye.
+- [ ] `pnpm reconcile` is clean, and runs nightly. It checks the three things
+      that are actually true: every chip in circulation was issued by a
+      deposit, every balance equals the sum of that account's ledger entries,
+      and every table holds exactly what was bought into it less what was
+      cashed out.
+
+      This used to read "for every account, `users.chips` plus its seat stacks
+      equals the sum of its ledger entries", which is false and would have
+      failed on any healthy table. Winning a pot moves chips between two seats
+      and writes no ledger entry, because nothing entered or left an account;
+      and a buy-in writes a negative delta while the chips still exist, sitting
+      on a table. The ledger records chips crossing the boundary of an account,
+      not chips coming into being. `src/server/reconcile.ts` states the correct
+      version at the top.
 
 ### It stays up
 
@@ -163,6 +175,12 @@ for a day is a blocked teammate.
 where they are enforced:
 
 - An agent holds exactly one seat, so its stack is never split.
+- A hand is stored only when it completes, and stacks are only written from a
+  stored hand. An interrupted hand is discarded whole, which is what makes a
+  restart mid-deal cost a hand rather than chips.
+- A deposit is credited from the chain, never from a client's word, and never
+  twice: the credit is conditioned on the intent still being pending, under a
+  lock on that row.
 - A wallet holds at most one seat per table, so nobody plays both sides of a
   hand and nobody sees two sets of hole cards.
 - The model is never an authority: equity and legal moves are settled before it

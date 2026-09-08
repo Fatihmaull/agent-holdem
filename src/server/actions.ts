@@ -622,7 +622,13 @@ export interface RedemptionResult {
  * balance that authorised it. The redemption id is passed to the contract,
  * which refuses to pay the same one twice.
  */
-export async function redeem(session: Session, chips: number): Promise<RedemptionResult> {
+export type PayOut = (
+  recipient: `0x${string}`,
+  netWei: bigint,
+  redemptionId: `0x${string}`,
+) => Promise<`0x${string}`>;
+
+export async function redeem(session: Session, chips: number, pay: PayOut = payOut): Promise<RedemptionResult> {
   if (!Number.isInteger(chips) || chips <= 0) throw new ActionError('Enter a whole number of chips.');
 
   const quote = quoteRedemption(chips);
@@ -658,8 +664,10 @@ export async function redeem(session: Session, chips: number): Promise<Redemptio
     return { id: created.id, balance: debited.chips };
   });
 
+  logger.info('redemption.debited', { redemptionId: record.id, chips, netWei: quote.netWei.toString() });
+
   try {
-    const txHash = await payOut(session.address as `0x${string}`, quote.netWei, intentToBytes32(record.id));
+    const txHash = await pay(session.address as `0x${string}`, quote.netWei, intentToBytes32(record.id));
     await db
       .update(redemptions)
       .set({ status: 'sent', txHash, sentAt: new Date() })
@@ -682,6 +690,15 @@ export async function redeem(session: Session, chips: number): Promise<Redemptio
         .set({ txHash: error.txHash })
         .where(eq(redemptions.id, record.id));
 
+      // The one case a person has to settle. `pnpm redemptions` lists these and
+      // docs/RUNBOOK.md says how to decide; both key off exactly this event.
+      logger.error('redemption.uncertain', {
+        redemptionId: record.id,
+        txHash: error.txHash,
+        chips,
+        detail: 'broadcast but unconfirmed; chips stay spent until a person settles it',
+      });
+
       throw new ActionError(
         'Your payout was sent but has not confirmed yet. Your chips stay spent until it settles, and it will not be sent twice.',
       );
@@ -689,6 +706,12 @@ export async function redeem(session: Session, chips: number): Promise<Redemptio
 
     // Nothing was paid, so the chips go back. The redemption stays on file as
     // failed rather than disappearing.
+    logger.warn('redemption.failed', {
+      redemptionId: record.id,
+      chips,
+      error: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+    });
+
     await db.transaction(async (tx) => {
       await tx.update(redemptions).set({ status: 'failed' }).where(eq(redemptions.id, record.id));
       const [refunded] = await tx

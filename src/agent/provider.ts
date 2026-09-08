@@ -28,6 +28,27 @@ export class RateLimited extends Error {
 
 export class ProviderError extends Error {}
 
+/**
+ * The provider could not be reached, or refused this key.
+ *
+ * Separate from `ProviderError` because the two call for opposite responses.
+ * An unavailable provider or a rejected key is worth trying another key for; a
+ * reply that came back and was unusable is not, and retrying it on four keys
+ * spends four times as much to get the same answer.
+ */
+export class ProviderUnavailable extends ProviderError {
+  constructor(
+    message: string,
+    /** How long this key should sit out. Null leaves the queue's default. */
+    readonly retryAfterMs: number | null = null,
+  ) {
+    super(message);
+  }
+}
+
+/** A key the provider will keep refusing, so it sits out far longer than a blip. */
+const BAD_KEY_COOLDOWN_MS = 5 * 60_000;
+
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 /** Thinking budget to request, or null to leave the model's default alone. */
@@ -40,7 +61,7 @@ class GeminiProvider implements ModelProvider {
   constructor(private readonly model: string) {}
 
   async *stream(request: ModelRequest, apiKey: string, signal: AbortSignal): AsyncIterable<string> {
-    const response = await fetch(
+    const response = await reach(() => fetch(
       `${GEMINI_ENDPOINT}/${encodeURIComponent(this.model)}:streamGenerateContent?alt=sse`,
       {
         method: 'POST',
@@ -60,11 +81,20 @@ class GeminiProvider implements ModelProvider {
           },
         }),
       },
-    );
+    ));
 
     if (response.status === 429) {
       const retryAfter = Number(response.headers.get('retry-after'));
       throw new RateLimited('provider rate limit', Number.isFinite(retryAfter) ? retryAfter * 1000 : 30_000);
+    }
+    // A rejected key never recovers on its own, so it sits out long enough that
+    // the pool stops paying for it on every hand. A 5xx is the provider having
+    // a moment, and the next key along will probably work.
+    if (response.status === 401 || response.status === 403) {
+      throw new ProviderUnavailable(`${this.name} refused this key (${response.status})`, BAD_KEY_COOLDOWN_MS);
+    }
+    if (response.status >= 500) {
+      throw new ProviderUnavailable(`${this.name} returned ${response.status}: ${await safeText(response)}`);
     }
     if (!response.ok || !response.body) {
       throw new ProviderError(`${this.name} returned ${response.status}: ${await safeText(response)}`);
@@ -224,5 +254,23 @@ async function safeText(response: Response): Promise<string> {
     return (await response.text()).slice(0, 300);
   } catch {
     return '<no body>';
+  }
+}
+
+/**
+ * Turns a dead socket into something the queue can act on.
+ *
+ * `fetch` rejects with an opaque `TypeError` when a host is unreachable, and an
+ * opaque error would be raised straight to the seat instead of moving to the
+ * next key.
+ */
+async function reach(call: () => Promise<Response>): Promise<Response> {
+  try {
+    return await call();
+  } catch (error) {
+    // An abort is our own doing — the act clock or a shutdown — and must not be
+    // mistaken for the provider being down.
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    throw new ProviderUnavailable(error instanceof Error ? error.message.slice(0, 200) : 'the provider is unreachable');
   }
 }

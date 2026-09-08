@@ -51,6 +51,10 @@ const REDACT = /^(.*(key|secret|token|password|authorization|cookie).*)$/i;
 function scrub(fields: LogFields): LogFields {
   const safe: LogFields = {};
   for (const [name, value] of Object.entries(fields)) {
+    // A caller that computes a field conditionally passes undefined rather
+    // than branching, and `detail=undefined` in a log line is worse than no
+    // field at all.
+    if (value === undefined) continue;
     if (REDACT.test(name)) {
       safe[name] = '[redacted]';
       continue;

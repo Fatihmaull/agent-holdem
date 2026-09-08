@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { depositWatcher, engineStatus } from '@/server/registry';
 import { vaultConfigured } from '@/server/chain';
+import { modelQueue } from '@/agent/queue';
 
 /**
  * Whether this instance is actually working, not merely answering.
@@ -30,10 +31,11 @@ export async function GET(): Promise<Response> {
   const database = await checkDatabase();
   const engine = engineExpected ? checkEngine() : { ok: true, detail: 'disabled by configuration' };
   const deposits = engineExpected ? checkDeposits() : { ok: true, detail: 'disabled by configuration' };
+  const model = checkModel();
 
-  const ok = database.ok && engine.ok && deposits.ok;
+  const ok = database.ok && engine.ok && deposits.ok && model.ok;
   return Response.json(
-    { ok, checks: { database, engine, deposits }, at: new Date().toISOString() },
+    { ok, checks: { database, engine, deposits, model }, at: new Date().toISOString() },
     { status: ok ? 200 : 503 },
   );
 }
@@ -77,4 +79,22 @@ function checkDeposits(): Check {
   if (!status.watching) return { ok: false, detail: 'the deposit watcher is not running' };
   if (status.lastError) return { ok: false, detail: `last sweep failed: ${status.lastError}` };
   return { ok: true, lastSweepAt: status.lastSweepAt };
+}
+
+/**
+ * The model pool, which fails quietly rather than loudly: every seat still
+ * acts, it just acts on the fallback instead of on what its owner wrote. That
+ * is a product outage nobody would notice from an error rate, so it is
+ * reported here.
+ */
+function checkModel(): Check {
+  const queue = modelQueue().snapshot();
+
+  if (queue.coolingDown >= queue.keys) {
+    return { ok: false, detail: 'every model key is cooling down', ...queue };
+  }
+  if (queue.dailyCap !== null && queue.spentToday >= queue.dailyCap) {
+    return { ok: false, detail: 'the daily model request ceiling has been reached', ...queue };
+  }
+  return { ok: true, ...queue };
 }

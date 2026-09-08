@@ -71,6 +71,24 @@ jobs:
       - name: Migrate a fresh database
         run: pnpm db:migrate
 
+      # The money lives in actions.ts, deposits.ts and settlement.ts, and none of
+      # it is meaningfully testable without a database: row locks, a unique index
+      # and conditional updates are the things doing the work. Kept out of
+      # `pnpm test` so a contributor without Docker is not blocked; run here,
+      # where there is always a Postgres.
+      - name: Test against a real database
+        run: pnpm test:db
+
+      # The suite leaves chips and hands behind it. Reconciling afterwards means
+      # a change that quietly stops balancing fails the build rather than
+      # waiting to be found in production.
+      - name: Reconcile the ledger
+        run: pnpm reconcile
+        env:
+          # The suite's own database, which is where the chips it created are.
+          # Reconciling the empty one would pass without proving anything.
+          DATABASE_URL: postgres://agentholdem:agentholdem@localhost:5432/agentholdem_test
+
       - name: Build
         run: pnpm build
 
@@ -107,4 +125,10 @@ jobs:
       # small enough that always running it costs less than that trap.
       - name: Test
         run: forge test -vv
+        working-directory: contracts
+
+      # A change that doubles what a deposit costs to make should be visible in
+      # the diff, not discovered by a player paying for it.
+      - name: Gas report
+        run: forge test --gas-report
         working-directory: contracts
