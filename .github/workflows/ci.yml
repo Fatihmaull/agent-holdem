@@ -44,6 +44,10 @@ jobs:
       # The engine deals hands for the life of a process. Neither a build nor a
       # test run has any business starting one against CI's database.
       AGENTHOLDEM_DISABLE_ENGINE: '1'
+      # Without this the logger defaults to debug, and one cascading truncate
+      # per test buries the run in a few hundred Postgres notices. This is the
+      # log somebody reads when a build fails, so it should be readable.
+      LOG_LEVEL: info
 
     steps:
       - uses: actions/checkout@v4
