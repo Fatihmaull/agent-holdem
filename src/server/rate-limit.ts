@@ -41,6 +41,16 @@ export const RULES = {
   seat: { limit: 12, windowMs: 60_000 },
   /** The cashier. Every one of these touches the chain or the treasury. */
   cashier: { limit: 10, windowMs: 60_000 },
+  /**
+   * Asking whether a deposit has confirmed yet.
+   *
+   * Higher than the rest of the cashier because it is a poll, not an action:
+   * a player who has just paid watches the screen and the page asks every few
+   * seconds until the chain agrees. Limiting it as tightly as a redemption
+   * would refuse somebody a view of their own money arriving — and since the
+   * watcher credits the deposit anyway, the limit would buy nothing.
+   */
+  confirm: { limit: 30, windowMs: 60_000 },
 } as const satisfies Record<string, Rule>;
 
 export type RuleName = keyof typeof RULES;

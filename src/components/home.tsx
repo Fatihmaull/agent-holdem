@@ -1,6 +1,7 @@
 'use client';
 
 import { formatChips } from '@/lib/economy';
+import { FAUCET_URL } from '@/lib/network';
 import { useAccount } from './account-context';
 import { HeroPreview } from './hero-preview';
 import { TableList } from './table-list';
@@ -79,8 +80,18 @@ function Hero() {
             </ButtonLink>
           </div>
 
-          <p className="mt-4 text-sm text-faint">
-            No-Limit Texas Hold’em on BNB Testnet. Watching a table is free and needs no wallet.
+          <p className="mt-4 max-w-[52ch] text-sm text-faint">
+            No-Limit Texas Hold’em on BNB Testnet. Watching a table is free and needs no wallet. To play you
+            need testnet tBNB, which is{' '}
+            <a
+              href={FAUCET_URL}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-accent underline underline-offset-2 hover:no-underline"
+            >
+              free from the faucet
+            </a>{' '}
+            and worth nothing.
           </p>
         </div>
 
@@ -90,19 +101,35 @@ function Hero() {
   );
 }
 
-/** Three steps, in the order they happen. The numbering is the sequence, not decoration. */
+/**
+ * The whole path, in the order it happens.
+ *
+ * It used to start at "write the strategy", which is the interesting step and
+ * the third one. A stranger who has not connected a wallet or bought a chip
+ * cannot reach it, and a list that begins after the two things standing in
+ * their way reads as though those things are not there.
+ */
 const STEPS = [
+  {
+    title: 'Connect a wallet',
+    body: 'Signing proves the wallet is yours. It costs nothing and sends no transaction.',
+  },
+  {
+    title: 'Get testnet tBNB',
+    body: 'Free, from the BNB faucet. It has no market value — that is what makes this safe to try.',
+    link: { href: FAUCET_URL, label: 'Open the faucet' },
+  },
+  {
+    title: 'Buy chips',
+    body: 'One chip is always 0.00001 tBNB, in both directions. Cash out whenever you like.',
+  },
   {
     title: 'Write the strategy',
     body: 'Describe how it should play in plain English: which hands to raise, how much to bet, when to bluff and when to give up.',
   },
   {
-    title: 'Seat it at a table',
-    body: 'Pick a format and a stake. Your agent buys in with your chips and keeps playing until you take it out.',
-  },
-  {
-    title: 'Watch every decision',
-    body: 'Read its reasoning as it decides, next to the equity the engine computed and the action it settled on.',
+    title: 'Seat it and watch',
+    body: 'Pick a format and a stake. It plays every hand whether or not you are watching, and you can read the reasoning behind each decision.',
   },
 ];
 
@@ -110,8 +137,11 @@ function HowItWorks() {
   return (
     <section className="border-b border-line">
       <div className="mx-auto w-full max-w-[84rem] px-4 py-14 sm:px-6">
-        <SectionHeading title="How it works" sub="You do the first step once. The other two repeat." />
-        <ol className="grid gap-x-10 gap-y-8 md:grid-cols-3">
+        <SectionHeading
+          title="How it works"
+          sub="Five minutes, and nothing in it costs real money. The first three you do once."
+        />
+        <ol className="grid gap-x-10 gap-y-8 sm:grid-cols-2 lg:grid-cols-3">
           {STEPS.map((step, index) => (
             <li key={step.title} className="border-t border-line-strong pt-4">
               <h3 className="flex items-baseline gap-2.5 text-base text-ink">
@@ -119,6 +149,16 @@ function HowItWorks() {
                 {step.title}
               </h3>
               <p className="mt-2 max-w-[42ch] text-sm text-muted">{step.body}</p>
+              {step.link ? (
+                <a
+                  href={step.link.href}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="mt-2 inline-block text-sm text-accent underline underline-offset-2 hover:no-underline"
+                >
+                  {step.link.label} →
+                </a>
+              ) : null}
             </li>
           ))}
         </ol>
@@ -211,7 +251,8 @@ const FACTS = [
   {
     question: 'Is any of this real money?',
     answer:
-      'No. Every table settles on BNB Testnet with test funds. You need testnet tBNB to buy chips, and it has no market value.',
+      'No. Every table settles on BNB Testnet with test funds. You need testnet tBNB to buy chips, it comes free from the BNB faucet, and it has no market value.',
+    link: { href: FAUCET_URL, label: 'Open the BNB testnet faucet' },
   },
   {
     question: 'What happens to my agent when I close the tab?',
@@ -232,7 +273,22 @@ function GoodToKnow() {
               className="grid gap-x-10 gap-y-1.5 border-b border-line py-5 md:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]"
             >
               <dt className="text-[0.9375rem] font-medium text-ink">{fact.question}</dt>
-              <dd className="max-w-[62ch] text-sm text-muted">{fact.answer}</dd>
+              <dd className="max-w-[62ch] text-sm text-muted">
+                {fact.answer}
+                {fact.link ? (
+                  <>
+                    {' '}
+                    <a
+                      href={fact.link.href}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="text-accent underline underline-offset-2 hover:no-underline"
+                    >
+                      {fact.link.label} →
+                    </a>
+                  </>
+                ) : null}
+              </dd>
             </div>
           ))}
         </dl>

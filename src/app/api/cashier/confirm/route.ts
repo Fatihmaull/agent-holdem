@@ -2,7 +2,7 @@ import { ActionError, confirmDeposit } from '@/server/actions';
 import { guard } from '@/server/guard';
 
 export async function POST(request: Request): Promise<Response> {
-  const guarded = await guard(request, 'cashier');
+  const guarded = await guard(request, 'confirm');
   if (!guarded.ok) return guarded.response;
   const { session } = guarded;
 

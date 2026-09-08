@@ -3,6 +3,7 @@ import { Archivo, IBM_Plex_Mono } from 'next/font/google';
 import './globals.css';
 import { SiteHeader } from '@/components/site-header';
 import { AccountProvider } from '@/components/account-context';
+import { TestnetNotice } from '@/components/testnet-notice';
 
 /*
   A grotesque drawn for small sizes and dense listings, which is what a lobby
@@ -50,6 +51,7 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
           >
             Skip to content
           </a>
+          <TestnetNotice />
           <SiteHeader />
           <main id="main" className="flex flex-1 flex-col">
             {children}

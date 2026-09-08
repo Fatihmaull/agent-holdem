@@ -328,6 +328,10 @@ function ChipTower({ chips }: { chips: number }) {
 /**
  * A deposit is credited only once the chain has confirmed it, so the cashier
  * keeps asking rather than pretending the chips have arrived.
+ *
+ * Giving up here is not the same as losing the deposit. The server credits it
+ * from the chain whether or not this page is open, so the worst case is that
+ * somebody sees their chips a minute later than they hoped.
  */
 async function pollConfirm(txHash: string, onStatus: (message: string) => void): Promise<number> {
   for (let attempt = 0; attempt < 40; attempt++) {
@@ -336,22 +340,52 @@ async function pollConfirm(txHash: string, onStatus: (message: string) => void):
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ txHash }),
     });
-    const body = (await response.json()) as { chips?: number; error?: string };
+    const body = (await response.json()) as { chips?: number; error?: string; retryAfterMs?: number };
 
     if (response.ok && typeof body.chips === 'number') return body.chips;
+
+    // Polling is what the limit is there to bound, not to punish. Waiting the
+    // time it asks for is the correct response, and treating it as a failure
+    // would tell somebody their deposit had broken when it is on its way.
+    if (response.status === 429) {
+      onStatus('Still waiting for the network. Checking again shortly.');
+      await new Promise((resolve) => setTimeout(resolve, Math.max(2_000, body.retryAfterMs ?? 5_000)));
+      continue;
+    }
+
     if (body.error && !/confirmation/i.test(body.error)) throw new Error(body.error);
 
     onStatus(body.error ?? 'Waiting for the network to confirm.');
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
   }
   throw new Error(
-    'That deposit has not confirmed yet. It is on record, so reopen the cashier later and it will be finished then.',
+    'This is taking longer than usual. Your deposit is on record and the server credits it from the chain on its own, so the chips will arrive whether or not you keep this open.',
   );
 }
 
+/**
+ * Every failure says what happened and what to do next.
+ *
+ * Wallet errors arrive as numeric EIP-1193 codes and as provider strings that
+ * were never written for a person to read. "Internal JSON-RPC error" tells
+ * somebody nothing about the fact that they have no tBNB.
+ */
 function describe(error: unknown): string {
   const code = (error as { code?: number })?.code;
-  if (code === 4001) return 'Transaction rejected in your wallet.';
-  if (error instanceof Error) return error.message;
-  return 'The cashier could not complete that.';
+  const message = error instanceof Error ? error.message : '';
+
+  if (code === 4001) return 'You rejected the transaction in your wallet. Nothing was sent and nothing was spent.';
+  if (code === -32002) return 'Your wallet already has a request open. Finish or dismiss it there, then try again.';
+  if (code === 4902 || /unrecognized chain/i.test(message)) {
+    return 'Your wallet does not have BNB Testnet yet. Approve the prompt to add it, then try again.';
+  }
+  if (/insufficient funds/i.test(message)) {
+    return 'Not enough tBNB in your wallet to cover that, including gas. It is free from the BNB faucet.';
+  }
+  if (/user (denied|rejected)/i.test(message)) return 'You rejected the request in your wallet.';
+  if (/network|fetch failed|timeout/i.test(message)) {
+    return 'Could not reach the network. Check your connection and try again — nothing was spent.';
+  }
+  if (message) return message;
+  return 'The cashier could not complete that. Nothing was spent.';
 }

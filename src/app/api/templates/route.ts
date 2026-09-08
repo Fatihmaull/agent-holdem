@@ -4,9 +4,14 @@ import { guard } from '@/server/guard';
 
 // Reads are not limited: the interface polls, and a read costs a query rather
 // than a chip, an agent or a model request.
+//
+// A visitor who is not signed in has no drafts, which is an answer rather than
+// an error. Returning 401 put a red line in the console of anybody who opened
+// the editor to look around, and a console with noise in it is a console
+// nobody reads when something is actually wrong.
 export async function GET(): Promise<Response> {
   const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+  if (!session) return Response.json({ templates: [] });
   return Response.json({ templates: await listTemplates(session) });
 }
 
