@@ -20,6 +20,7 @@ export async function GET(): Promise<Response> {
   const rows = await decisionsForHand(hand.id);
   return Response.json({
     mode: 'replay',
+    handId: hand.id,
     tableId: hand.tableId,
     handNumber: hand.handNumber,
     lineup: hand.lineup,

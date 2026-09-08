@@ -1,15 +1,24 @@
 import { ActionError, listTemplates, saveTemplate } from '@/server/actions';
 import { getSession } from '@/server/auth';
+import { guard } from '@/server/guard';
 
+// Reads are not limited: the interface polls, and a read costs a query rather
+// than a chip, an agent or a model request.
+//
+// A visitor who is not signed in has no drafts, which is an answer rather than
+// an error. Returning 401 put a red line in the console of anybody who opened
+// the editor to look around, and a console with noise in it is a console
+// nobody reads when something is actually wrong.
 export async function GET(): Promise<Response> {
   const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+  if (!session) return Response.json({ templates: [] });
   return Response.json({ templates: await listTemplates(session) });
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+  const guarded = await guard(request, 'write');
+  if (!guarded.ok) return guarded.response;
+  const { session } = guarded;
 
   const body = (await request.json().catch(() => null)) as
     | { id?: unknown; name?: unknown; body?: unknown }

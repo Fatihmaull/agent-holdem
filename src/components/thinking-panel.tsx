@@ -77,6 +77,8 @@ export function ThinkingPanel({
         <ActClock deadline={deadline ?? null} />
       </div>
 
+      <Reading brain={brain} />
+
       <div
         className="scroll-y min-h-0 flex-1 px-4 py-4"
         data-panel-scroll
@@ -119,13 +121,24 @@ export function ThinkingPanel({
         <div className="min-h-11">
           {brain?.action ? (
             <>
-              <div className="flex items-baseline gap-3">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                 <span className="text-base font-semibold text-ink capitalize">
                   {brain.action}
                   {brain.amount > 0
                     ? ` ${brain.amount.toLocaleString("en-US")}`
                     : ""}
                 </span>
+                {/*
+                  A fallback is not a decision, and labelling it here is the
+                  difference between an agent that played badly and one that
+                  never answered. The reason is spelled out above; this is so
+                  the difference survives a glance.
+                */}
+                {brain.outcome && brain.outcome !== "decided" ? (
+                  <span className="rounded-[0.3125rem] border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-xs font-medium text-ink">
+                    {brain.outcome === "timeout" ? "ran out of time" : "no answer"}
+                  </span>
+                ) : null}
                 {brain.elapsedMs != null ? (
                   <span className="mono ml-auto text-xs text-faint tabular-nums">
                     took {(brain.elapsedMs / 1000).toFixed(1)}s
@@ -152,6 +165,91 @@ export function ThinkingPanel({
           <p className="mt-1.5 truncate text-xs text-faint">{footnote}</p>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * What the engine knew before the model was asked anything.
+ *
+ * This is the part that makes the panel an instrument rather than a transcript.
+ * The equity and the price are computed by the server from the actual cards,
+ * before a model sees the hand — so they are the one thing on screen that
+ * cannot be talked into being wrong, and they are what a reader checks the
+ * reasoning against.
+ *
+ * Written for somebody who does not play poker. "Equity 0.68, pot odds 0.33"
+ * is two numbers a poker player reads instantly and nobody else reads at all;
+ * "68% to win, and staying in costs 33%" is the same fact and needs no glossary.
+ */
+function Reading({ brain }: { brain: BrainState | null }) {
+  if (!brain || brain.equity === null) return null;
+
+  const equity = Math.round(brain.equity * 100);
+  // With nothing to call, staying in is free and there is no price to beat.
+  const price = brain.potOdds === null ? null : Math.round(brain.potOdds * 100);
+  const worth = price === null ? null : equity >= price;
+
+  return (
+    <div className="shrink-0 border-b border-line px-4 py-3">
+      <p className="label mb-2 text-faint">What it is holding</p>
+
+      {brain.made || brain.draws.length > 0 ? (
+        <p className="mb-2.5 text-sm text-ink">
+          {brain.made ?? "Nothing made yet"}
+          {brain.draws.length > 0 ? (
+            <span className="text-muted"> · drawing to {brain.draws.join(" and ")}</span>
+          ) : null}
+        </p>
+      ) : null}
+
+      <dl className="space-y-1.5">
+        <Measure label="Chance to win" percent={equity} tone="win" />
+        {price === null ? (
+          <div className="flex items-baseline gap-2 text-xs">
+            <dt className="w-[7.5rem] shrink-0 text-faint">Cost to stay in</dt>
+            <dd className="text-muted">Nothing — it can see the next card for free</dd>
+          </div>
+        ) : (
+          <Measure label="Price to stay in" percent={price} tone="price" />
+        )}
+      </dl>
+
+      {worth !== null ? (
+        <p className="mt-2 text-xs text-muted">
+          {worth
+            ? `The price is worth paying: it wins more often than the ${price}% it needs.`
+            : `The price is too high: it needs to win ${price}% and only wins ${equity}%.`}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** One number as a bar, because two bars side by side is the whole comparison. */
+function Measure({
+  label,
+  percent,
+  tone,
+}: {
+  label: string;
+  percent: number;
+  tone: "win" | "price";
+}) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <dt className="w-[7.5rem] shrink-0 text-faint">{label}</dt>
+      <dd className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-surface-3">
+          <span
+            className={`block h-full rounded-full ${tone === "win" ? "bg-live" : "bg-muted"}`}
+            style={{ width: `${Math.max(0, Math.min(100, percent))}%` }}
+          />
+        </span>
+        <span className="mono w-9 shrink-0 text-right text-ink tabular-nums">
+          {percent}%
+        </span>
+      </dd>
     </div>
   );
 }

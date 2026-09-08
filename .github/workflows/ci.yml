@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch makes the older run irrelevant. Cancelling it
+# keeps the queue short, which is most of what keeps CI under ten minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: App
+    runs-on: ubuntu-latest
+    # The bar from docs/BACKLOG.md B1: over ten minutes and people start
+    # ignoring it. Failing loudly is better than quietly getting slower.
+    timeout-minutes: 10
+
+    services:
+      # Matches docker-compose.yml, so what CI proves is what a developer runs.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: agentholdem
+          POSTGRES_PASSWORD: agentholdem
+          POSTGRES_DB: agentholdem
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentholdem -d agentholdem"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://agentholdem:agentholdem@localhost:5432/agentholdem
+      # `next build` collects page data for every API route, which imports
+      # db/client and refuses to load without this. It never opens a
+      # connection during the build, but it has to be set.
+      #
+      # The engine deals hands for the life of a process. Neither a build nor a
+      # test run has any business starting one against CI's database.
+      AGENTHOLDEM_DISABLE_ENGINE: '1'
+      # Without this the logger defaults to debug, and one cascading truncate
+      # per test buries the run in a few hundred Postgres notices. This is the
+      # log somebody reads when a build fails, so it should be readable.
+      LOG_LEVEL: info
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before setup-node, so its pnpm cache has a pnpm to look at. The version
+      # comes from `packageManager` in package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      # Proves the generated migrations apply to an empty database. A migration
+      # that only works against the developer's existing schema passes every
+      # other check in this file.
+      - name: Migrate a fresh database
+        run: pnpm db:migrate
+
+      # The money lives in actions.ts, deposits.ts and settlement.ts, and none of
+      # it is meaningfully testable without a database: row locks, a unique index
+      # and conditional updates are the things doing the work. Kept out of
+      # `pnpm test` so a contributor without Docker is not blocked; run here,
+      # where there is always a Postgres.
+      - name: Test against a real database
+        run: pnpm test:db
+
+      # The suite leaves chips and hands behind it. Reconciling afterwards means
+      # a change that quietly stops balancing fails the build rather than
+      # waiting to be found in production.
+      - name: Reconcile the ledger
+        run: pnpm reconcile
+        env:
+          # The suite's own database, which is where the chips it created are.
+          # Reconciling the empty one would pass without proving anything.
+          DATABASE_URL: postgres://agentholdem:agentholdem@localhost:5432/agentholdem_test
+
+      - name: Build
+        run: pnpm build
+
+      # After the build on purpose. Next generates the `RouteContext`,
+      # `PageProps` and `LayoutProps` types during a build; run tsc before it
+      # and five errors appear that mean nothing. Run it after and a clean
+      # result is a real one.
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit -p tsconfig.json
+
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # foundry.toml interpolates these. Nothing in `forge test` reaches the
+      # network, but the file is parsed before forge knows that.
+      BSC_TESTNET_RPC_URL: https://data-seed-prebsc-1-s1.bnbchain.org:8545
+      BSCSCAN_API_KEY: ''
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # contracts/lib/forge-std is a submodule. Without this the checkout
+          # leaves it empty and every test fails on a missing import.
+          submodules: recursive
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      # This job runs on every pull request rather than only when contracts/
+      # changed. A required check that is skipped never reports, and a pull
+      # request then waits on a check that will never arrive. The suite is
+      # small enough that always running it costs less than that trap.
+      - name: Test
+        run: forge test -vv
+        working-directory: contracts
+
+      # A change that doubles what a deposit costs to make should be visible in
+      # the diff, not discovered by a player paying for it.
+      - name: Gas report
+        run: forge test --gas-report
+        working-directory: contracts

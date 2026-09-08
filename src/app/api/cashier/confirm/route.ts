@@ -1,9 +1,10 @@
 import { ActionError, confirmDeposit } from '@/server/actions';
-import { getSession } from '@/server/auth';
+import { guard } from '@/server/guard';
 
 export async function POST(request: Request): Promise<Response> {
-  const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+  const guarded = await guard(request, 'confirm');
+  if (!guarded.ok) return guarded.response;
+  const { session } = guarded;
 
   const body = (await request.json().catch(() => null)) as { txHash?: string } | null;
   if (!body?.txHash) return Response.json({ error: 'Send the transaction hash.' }, { status: 400 });

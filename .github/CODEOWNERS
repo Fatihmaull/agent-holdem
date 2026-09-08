@@ -1,0 +1,59 @@
+# Who reviews what, by the four tracks in docs/BACKLOG.md.
+#
+# A review that lands on the wrong person is a review that waits a day, so this
+# maps code to the person who wrote it or owns it rather than spreading it
+# evenly. Later rules win, so the specific ones are at the bottom.
+#
+# Tracks C and D have no owner yet. Their paths fall through to the repository
+# owner deliberately: a CODEOWNERS entry pointing at nobody silently stops
+# requesting anybody. Swap the names in when the other two developers are named
+# — that is the only change needed here.
+
+*                               @Fatihmaull
+
+# ── Track A · Chain & Money — @Lagxy ───────────────────────────────────────
+# Wrote the vault, the peg and the ledger. Every P0 blocker about money is in
+# code he authored.
+
+/contracts/                     @Lagxy
+/src/server/chain.ts            @Lagxy
+/src/server/deposits.ts         @Lagxy
+/src/server/settlement.ts       @Lagxy
+/src/server/reconcile.ts        @Lagxy
+/src/server/vault-abi.ts        @Lagxy
+/src/lib/economy.ts             @Lagxy
+/src/lib/intent.ts              @Lagxy
+/src/ops/                       @Lagxy
+
+# ── Track B · Platform & Release — @Fatihmaull ─────────────────────────────
+# Owns the repository. Branch protection, deploy targets and secret storage
+# need admin rights nobody else has.
+
+/.github/                       @Fatihmaull
+/docs/                          @Fatihmaull
+/Dockerfile                     @Fatihmaull
+/docker-compose.yml             @Fatihmaull
+/.env.example                   @Fatihmaull
+
+# ── Track C · Engine & Reliability — TBA ───────────────────────────────────
+# The engine's behaviour under restart, load and abuse.
+
+/src/poker/                     @Fatihmaull
+/src/agent/                     @Fatihmaull
+/src/server/table.ts            @Fatihmaull
+/src/server/registry.ts         @Fatihmaull
+/src/server/lifecycle.ts        @Fatihmaull
+/src/server/rate-limit.ts       @Fatihmaull
+
+# ── Track D · Product & Frontend — TBA ─────────────────────────────────────
+# Everything a visitor sees, and whether they understand it.
+
+/src/app/                       @Fatihmaull
+/src/components/                @Fatihmaull
+/public/                        @Fatihmaull
+
+# The rules everyone works to. A change here is a change to how we all work,
+# so it goes past the repository owner whatever else it touches.
+/docs/DEFINITION_OF_DONE.md     @Fatihmaull
+/docs/DECISIONS.md              @Fatihmaull
+/CLAUDE.md                      @Fatihmaull

@@ -1,0 +1,66 @@
+name: Nightly
+
+# Reconciling the ledger and checking the treasury are the two things nobody
+# will remember to do by hand, and both are the kind of problem that is cheap
+# the morning after and expensive a month later.
+on:
+  schedule:
+    # 03:00 UTC, which is quiet everywhere that matters and well clear of a
+    # deploy window.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  reconcile:
+    name: Reconcile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # The secrets have to be added before this does anything. Saying so out
+      # loud beats a green tick on a job that silently checked nothing —
+      # a reconciliation nobody is running is worse than none, because it
+      # looks like one.
+      - name: Check the secrets are set
+        run: |
+          missing=0
+          for name in PRODUCTION_DATABASE_URL; do
+            if [ -z "${!name}" ]; then echo "::error::$name is not set"; missing=1; fi
+          done
+          exit $missing
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+
+      - name: Reconcile the ledger
+        run: pnpm reconcile
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+
+      # Wants the vault address and an RPC as well. Skipped rather than failed
+      # when there is no vault yet, because before A1 there is nothing to check.
+      - name: Check the treasury can cover what is owed
+        if: ${{ secrets.CHIP_VAULT_ADDRESS != '' }}
+        run: pnpm treasury
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          NEXT_PUBLIC_CHIP_VAULT_ADDRESS: ${{ secrets.CHIP_VAULT_ADDRESS }}
+          BSC_TESTNET_RPC_URL: ${{ secrets.BSC_TESTNET_RPC_URL }}
+
+      - name: List redemptions waiting on a person
+        # Exits non-zero when anything is stuck, which is the point — but the
+        # reconciliation above is the one that must not be masked by it.
+        continue-on-error: true
+        if: ${{ secrets.CHIP_VAULT_ADDRESS != '' }}
+        run: pnpm redemptions
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          NEXT_PUBLIC_CHIP_VAULT_ADDRESS: ${{ secrets.CHIP_VAULT_ADDRESS }}
+          BSC_TESTNET_RPC_URL: ${{ secrets.BSC_TESTNET_RPC_URL }}
