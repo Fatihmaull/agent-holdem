@@ -1,9 +1,10 @@
 import { ActionError, deleteAgent, saveAgent } from '@/server/actions';
-import { getSession } from '@/server/auth';
+import { guard } from '@/server/guard';
 
 export async function POST(request: Request, context: RouteContext<'/api/agent/[id]'>): Promise<Response> {
-  const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+  const guarded = await guard(request, 'write');
+  if (!guarded.ok) return guarded.response;
+  const { session } = guarded;
 
   const body = (await request.json().catch(() => null)) as { name?: unknown; instructions?: unknown } | null;
   if (typeof body?.name !== 'string' || typeof body?.instructions !== 'string') {
@@ -20,9 +21,10 @@ export async function POST(request: Request, context: RouteContext<'/api/agent/[
   }
 }
 
-export async function DELETE(_request: Request, context: RouteContext<'/api/agent/[id]'>): Promise<Response> {
-  const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+export async function DELETE(request: Request, context: RouteContext<'/api/agent/[id]'>): Promise<Response> {
+  const guarded = await guard(request, 'write');
+  if (!guarded.ok) return guarded.response;
+  const { session } = guarded;
 
   const { id } = await context.params;
   try {

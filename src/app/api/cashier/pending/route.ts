@@ -1,6 +1,7 @@
 import { noteDepositTx, unsettledDeposits } from '@/server/actions';
 import { ActionError } from '@/server/actions';
 import { getSession } from '@/server/auth';
+import { guard } from '@/server/guard';
 
 /**
  * Deposits that were paid but never credited.
@@ -16,8 +17,9 @@ export async function GET(): Promise<Response> {
 
 /** Records the transaction a deposit was paid with, before it has confirmed. */
 export async function POST(request: Request): Promise<Response> {
-  const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+  const guarded = await guard(request, 'cashier');
+  if (!guarded.ok) return guarded.response;
+  const { session } = guarded;
 
   const body = (await request.json().catch(() => null)) as { intentId?: string; txHash?: string } | null;
   if (!body?.intentId || !body?.txHash) {

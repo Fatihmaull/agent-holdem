@@ -1,9 +1,10 @@
 import { ActionError, deleteTemplate } from '@/server/actions';
-import { getSession } from '@/server/auth';
+import { guard } from '@/server/guard';
 
-export async function DELETE(_request: Request, context: RouteContext<'/api/templates/[id]'>): Promise<Response> {
-  const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+export async function DELETE(request: Request, context: RouteContext<'/api/templates/[id]'>): Promise<Response> {
+  const guarded = await guard(request, 'write');
+  if (!guarded.ok) return guarded.response;
+  const { session } = guarded;
 
   const { id } = await context.params;
   try {

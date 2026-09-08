@@ -1,10 +1,11 @@
 import { ActionError, createAgent } from '@/server/actions';
-import { getSession } from '@/server/auth';
+import { guard } from '@/server/guard';
 
 /** Creates another agent for this account. */
 export async function POST(request: Request): Promise<Response> {
-  const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+  const guarded = await guard(request, 'write');
+  if (!guarded.ok) return guarded.response;
+  const { session } = guarded;
 
   const body = (await request.json().catch(() => null)) as
     | { name?: unknown; instructions?: unknown }

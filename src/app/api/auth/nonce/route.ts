@@ -2,6 +2,8 @@ import { headers } from 'next/headers';
 import { SiweMessage } from 'siwe';
 import { getAddress, isAddress } from 'viem';
 import { expectedHost, expectedOrigin, issueNonce } from '@/server/auth';
+import { guardAnonymous } from '@/server/guard';
+import { logger } from '@/server/log';
 
 /**
  * Issues the nonce and the exact message to sign.
@@ -11,6 +13,10 @@ import { expectedHost, expectedOrigin, issueNonce } from '@/server/auth';
  * verbatim rather than editing it, which leaves nothing to get wrong.
  */
 export async function GET(request: Request): Promise<Response> {
+  // A read, but one that mints a nonce and so is worth bounding.
+  const refused = guardAnonymous(request, 'auth');
+  if (refused) return refused;
+
   const address = new URL(request.url).searchParams.get('address');
   if (!address || !isAddress(address)) {
     return Response.json({ error: 'Send the wallet address to sign with.' }, { status: 400 });
@@ -28,7 +34,7 @@ export async function GET(request: Request): Promise<Response> {
     host = expectedHost(requestHost);
     uri = expectedOrigin(requestHost, requestProto);
   } catch (error) {
-    console.error('sign-in is misconfigured', error);
+    logger.error('auth.misconfigured', { error: error instanceof Error ? error.message : 'unknown' });
     return Response.json({ error: 'Sign-in is unavailable on this deployment.' }, { status: 500 });
   }
 

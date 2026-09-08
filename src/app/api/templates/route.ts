@@ -1,6 +1,9 @@
 import { ActionError, listTemplates, saveTemplate } from '@/server/actions';
 import { getSession } from '@/server/auth';
+import { guard } from '@/server/guard';
 
+// Reads are not limited: the interface polls, and a read costs a query rather
+// than a chip, an agent or a model request.
 export async function GET(): Promise<Response> {
   const session = await getSession();
   if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
@@ -8,8 +11,9 @@ export async function GET(): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const session = await getSession();
-  if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+  const guarded = await guard(request, 'write');
+  if (!guarded.ok) return guarded.response;
+  const { session } = guarded;
 
   const body = (await request.json().catch(() => null)) as
     | { id?: unknown; name?: unknown; body?: unknown }
