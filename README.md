@@ -148,6 +148,8 @@ Two documents are the plan of record:
   revisit, each with what would make it wrong.
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — what to do when something involving
   money or the engine goes wrong, written for whoever is on call.
+- [`docs/DEPLOY.md`](docs/DEPLOY.md) — everything between a green build and a
+  stranger being able to use this.
 
 Short version of what is left: `ChipVault` has never been deployed, and there
 is no hosting. Both need somebody with a wallet and an account at a host —

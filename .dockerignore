@@ -1,0 +1,19 @@
+# Everything the build does not need, mostly so a stale local build cannot end
+# up inside the image and quietly become what runs in production.
+.git
+.github
+node_modules
+.next
+.data
+docs
+contracts/out
+contracts/cache
+contracts/broadcast
+*.log
+tsconfig.tsbuildinfo
+
+# Never. The image reads its configuration from the platform's secret store,
+# and an .env baked into a layer is a secret in a registry.
+.env
+.env.*
+!.env.example
