@@ -87,10 +87,6 @@ export function connectionsFor(ownerId: string): number {
   return count;
 }
 
-export function connectedCount(): number {
-  return registry().size;
-}
-
 /** Hangs up on everyone, so a restart tells agents to come back rather than stalling them. */
 export function closeAll(code: number, reason: string): void {
   for (const link of [...registry().values()]) link.close(code, reason);

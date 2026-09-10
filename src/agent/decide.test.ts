@@ -81,7 +81,7 @@ test('names positions from the button', () => {
 test('takes a legal action and keeps the streamed reasoning', async () => {
   const link = new FakeAgent(move('call', { say: 'Let us see a flop.' }), ['The price is right ', 'and I have position.']);
 
-  const record = await decide({ ...base, link, state: heads(), clockMs: 5000 });
+  const record = await decide({ ...base, link: () => link, state: heads(), clockMs: 5000 });
 
   assert.equal(record.outcome, 'decided');
   assert.equal(record.source, 'agent');
@@ -93,7 +93,7 @@ test('takes a legal action and keeps the streamed reasoning', async () => {
 
 test('the request carries what the agent is entitled to and nothing else', async () => {
   const link = new FakeAgent(move('call'));
-  await decide({ ...base, link, state: heads(), clockMs: 5000 });
+  await decide({ ...base, link: () => link, state: heads(), clockMs: 5000 });
 
   const [frame] = link.seen;
   assert.equal(frame.hole.length, 2, 'its own cards');
@@ -109,7 +109,7 @@ test('seat numbers on the wire are chairs, not engine positions', async () => {
   // agent needs a number that means the same thing all match, or its own notes
   // about seat three stop being about anybody.
   const link = new FakeAgent(move('call'));
-  await decide({ ...base, link, state: heads(), chairs: [4, 7], clockMs: 5000 });
+  await decide({ ...base, link: () => link, state: heads(), chairs: [4, 7], clockMs: 5000 });
 
   const [frame] = link.seen;
   assert.equal(frame.seat, 4, 'hero sits in chair four');
@@ -117,7 +117,7 @@ test('seat numbers on the wire are chairs, not engine positions', async () => {
 });
 
 test('an agent that is not connected checks or folds, and is not recorded as folding', async () => {
-  const record = await decide({ ...base, link: null, state: heads(), clockMs: 5000 });
+  const record = await decide({ ...base, link: () => null, state: heads(), clockMs: 5000 });
 
   assert.deepEqual(record.action, { type: 'fold' }, 'facing a blind, folding is the free move');
   assert.equal(record.outcome, 'error', 'not "decided": nobody decided anything');
@@ -127,7 +127,7 @@ test('an agent that is not connected checks or folds, and is not recorded as fol
 test('an agent that runs out the clock is recorded as a timeout', async () => {
   const link = new FakeAgent(() => new Promise<DecisionFrame>(() => {}), ['thinking…']);
 
-  const record = await decide({ ...base, link, state: heads(), clockMs: 40 });
+  const record = await decide({ ...base, link: () => link, state: heads(), clockMs: 40 });
 
   assert.equal(record.outcome, 'timeout');
   assert.equal(record.failure, 'ran out of time');
@@ -139,7 +139,7 @@ test('an illegal move is refused and named, rather than played', async () => {
   const link = new FakeAgent(move('check'));
 
   // Facing the big blind, checking is not on offer.
-  const record = await decide({ ...base, link, state: heads(), clockMs: 5000 });
+  const record = await decide({ ...base, link: () => link, state: heads(), clockMs: 5000 });
 
   assert.equal(record.outcome, 'error');
   assert.match(record.failure ?? '', /check/);
@@ -149,7 +149,7 @@ test('an illegal move is refused and named, rather than played', async () => {
 test('a raise outside the legal range is clamped rather than discarded', async () => {
   const link = new FakeAgent(move('raise', { to: 999_999 }));
 
-  const record = await decide({ ...base, link, state: heads(), clockMs: 5000 });
+  const record = await decide({ ...base, link: () => link, state: heads(), clockMs: 5000 });
 
   assert.equal(record.action.type, 'raise');
   assert.ok(record.action.to! <= 1000, `raised to ${record.action.to}, which is more than it has`);
@@ -160,7 +160,7 @@ test('facing an all-in, the agent is still asked, because folding is a real choi
 
   let state = heads();
   state = applyAction(state, { type: 'raise', to: 1000 });
-  const record = await decide({ ...base, link, state, seatIndex: 1, clockMs: 5000 });
+  const record = await decide({ ...base, link: () => link, state, seatIndex: 1, clockMs: 5000 });
 
   assert.equal(record.source, 'agent');
   assert.deepEqual(record.action, { type: 'fold' });
@@ -175,8 +175,33 @@ test('an agent answering after the clock cannot affect the next hand', async () 
   const first = new FakeAgent(move('call'));
   const second = new FakeAgent(move('call'));
 
-  await decide({ ...base, link: first, state: heads(), clockMs: 5000 });
-  await decide({ ...base, link: second, handNumber: 2, state: heads(), clockMs: 5000 });
+  await decide({ ...base, link: () => first, state: heads(), clockMs: 5000 });
+  await decide({ ...base, link: () => second, handNumber: 2, state: heads(), clockMs: 5000 });
 
   assert.notEqual(first.seen[0].id, second.seen[0].id);
+});
+
+test('a socket that drops mid-decision is asked again on the one that comes back', async () => {
+  // The case: an agent on flaky wifi loses its connection between being asked
+  // and answering. Reconnecting should cost it a moment, not a hand.
+  const revived = new FakeAgent(move('call'));
+  // Returns nothing and then hands the seat a working connection, which is what
+  // a reconnect looks like from the arena's side.
+  const dead = new FakeAgent(() => {
+    current = revived;
+    return null;
+  });
+  let current: Askable | null = dead;
+
+  const record = await decide({
+    ...base,
+    link: () => current,
+    state: heads(),
+    clockMs: 5000,
+  });
+
+  assert.deepEqual(record.action, { type: 'call' });
+  assert.equal(record.outcome, 'decided');
+  assert.equal(dead.seen.length, 1, 'the dead socket was asked once');
+  assert.equal(revived.seen.length, 1, 'and the new one answered');
 });

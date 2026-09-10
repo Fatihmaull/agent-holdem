@@ -16,7 +16,7 @@ import {
 } from '@agentholdem/protocol';
 import { SEAT_COST } from '../lib/economy';
 import { agentByToken, markClosed, markSeen } from './credentials';
-import { attach, connectionsFor, detach, type AgentLink } from './presence';
+import { attach, connectionsFor, detach, linkFor, type AgentLink } from './presence';
 import { balanceOf } from './store';
 
 /**
@@ -80,11 +80,24 @@ export function attachAgentSocket(server: HttpServer, nextUpgrade: (req: Incomin
 async function greet(ws: WebSocket): Promise<void> {
   const opened = Date.now();
 
+  /**
+   * Frames that arrive while the token is being looked up.
+   *
+   * Authenticating takes a database round trip, and a client that pipelines its
+   * first frames does not wait for it. Without somewhere to put them, anything
+   * sent in that window lands with no listener attached and is dropped by the
+   * socket library: an agent that sends hello and ready together would be
+   * welcomed, never queued, and never told why.
+   */
+  const backlog: string[] = [];
+  const collect = (data: unknown) => backlog.push(String(data));
+
   const hello = await new Promise<{ version: number; token: string } | null>((resolve) => {
     const timer = setTimeout(() => resolve(null), HANDSHAKE_MS);
 
     ws.once('message', (data) => {
       clearTimeout(timer);
+      ws.on('message', collect);
       const frame = parseClientFrame(data.toString());
       resolve(frame?.type === 'hello' ? { version: frame.version, token: frame.token } : null);
     });
@@ -94,6 +107,7 @@ async function greet(ws: WebSocket): Promise<void> {
       resolve(null);
     });
   });
+
 
   if (!hello) {
     reject(ws, CLOSE.BAD_HANDSHAKE, 'Send a hello frame with a version and a token first.');
@@ -120,6 +134,11 @@ async function greet(ws: WebSocket): Promise<void> {
     return;
   }
 
+  // Detached only now, immediately before the link attaches its own handler.
+  // Doing it any earlier reopens the window it exists to close: the token
+  // lookup above is a database round trip, and a frame arriving in that gap
+  // with no listener is dropped by the socket library and never seen again.
+  ws.off('message', collect);
   const link = new SocketLink(ws, agent.agentId, agent.userId);
 
   // The newer connection wins. An older one is nearly always a socket the far
@@ -138,6 +157,8 @@ async function greet(ws: WebSocket): Promise<void> {
     chips: await balanceOf(agent.userId).catch(() => 0),
     seatCost: SEAT_COST,
   });
+
+  link.replay(backlog);
 
   console.log(`[socket] ${agent.name} connected in ${Date.now() - opened}ms`);
 }
@@ -193,6 +214,17 @@ export class SocketLink implements AgentLink {
     this.heartbeat = setInterval(() => {
       if (this.ws.readyState === this.ws.OPEN) this.ws.ping();
     }, HEARTBEAT_MS).unref();
+  }
+
+  /**
+   * Handles frames that arrived during the handshake, in the order they came.
+   *
+   * Called after the welcome is on the wire, so a client that pipelined its
+   * first frames still sees the handshake acknowledged before anything that
+   * answers what it sent.
+   */
+  replay(backlog: readonly string[]): void {
+    for (const raw of backlog) this.receive(raw);
   }
 
   send(frame: ServerFrame): void {
@@ -324,6 +356,12 @@ export class SocketLink implements AgentLink {
     if (this.closed) return;
     this.closed = true;
 
+    // Asked before detaching, because detaching is what makes the answer no.
+    // A connection that was already replaced must not write its own goodbye
+    // over the newer one, or an owner reads "disconnected" about an agent that
+    // is sitting at a table right now.
+    const wasCurrent = linkFor(this.agentId) === this;
+
     clearInterval(this.heartbeat);
     this.ready = false;
 
@@ -334,6 +372,8 @@ export class SocketLink implements AgentLink {
 
     detach(this);
 
-    void markClosed(this.agentId, reason || `Connection closed (${code}).`).catch(() => {});
+    if (wasCurrent) {
+      void markClosed(this.agentId, reason || `Connection closed (${code}).`).catch(() => {});
+    }
   }
 }

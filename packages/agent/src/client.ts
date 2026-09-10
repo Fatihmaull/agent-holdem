@@ -35,6 +35,9 @@ export interface AgentOptions {
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 
+/** How often buffered reasoning is put on the wire. Eight frames a second reads as live. */
+const REASONING_FLUSH_MS = 120;
+
 export class Agent {
   private ws: WebSocket | null = null;
   private retryMs = RETRY_MIN_MS;
@@ -160,7 +163,22 @@ export class Agent {
     const timer = setTimeout(() => clock.abort(), budget);
 
     let sent = 0;
-    const emit = (text: string) => {
+    let buffered = '';
+    let flushTimer: NodeJS.Timeout | null = null;
+
+    // Coalesced rather than sent per chunk. A model streams tokens far faster
+    // than anyone can read them, and forwarding each one as its own frame turns
+    // a working agent into a flood. Batching costs the panel nothing: it is
+    // still well under what reads as live.
+    const flush = () => {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (!buffered) return;
+
+      const text = buffered;
+      buffered = '';
       // Kept under the arena's cap here rather than discovering it there, since
       // breaching it costs the connection and not just the hand.
       if (sent + Buffer.byteLength(text) > MAX_REASONING_BYTES) return;
@@ -168,12 +186,19 @@ export class Agent {
       this.send({ type: 'reasoning', id: frame.id, text });
     };
 
+    const emit = (text: string) => {
+      buffered += text;
+      flushTimer ??= setTimeout(flush, REASONING_FLUSH_MS);
+    };
+
     try {
       const decision = await this.options.brain.decide(frame, emit, clock.signal);
+      flush();
       this.send({ type: 'decision', id: frame.id, ...decision });
     } catch (error) {
       this.log(`could not decide on hand ${frame.handNumber}: ${describe(error)}`);
     } finally {
+      if (flushTimer) clearTimeout(flushTimer);
       clearTimeout(timer);
     }
   }

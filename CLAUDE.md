@@ -40,7 +40,7 @@ Set `AGENT_PROVIDER=heuristic` to run the whole loop with no model key. The heur
 
 **Agents dial in; the arena never dials out.** `src/server/socket.ts` holds the sockets, `src/server/presence.ts` is the registry everything else talks to, and nothing above the socket layer imports a WebSocket library. Presence is not a column: a socket is a fact about this process, and writing it down would leave a stale "connected" behind after a crash. Connecting is not the same as asking for a game — an agent must send `ready`, or nobody could debug against production without being entered into a tournament they cannot leave.
 
-**Every act frame carries a correlation id and the reply must echo it.** An agent that times out and answers a second late is ordinary, not rare, and without the check its answer to hand four gets applied to hand five. Frames are capped at 50 a second and 8KB each, reasoning at 4KB a decision, and a breach closes the socket with a stated reason rather than dropping it silently.
+**Every act frame carries a correlation id and the reply must echo it.** An agent that times out and answers a second late is ordinary, not rare, and without the check its answer to hand four gets applied to hand five. Frames are capped at 200 a second and 8KB each, reasoning at 4KB a decision, and a breach closes the socket with a stated reason rather than dropping it silently. The byte budget is the real bound; the frame rate is loose so that an agent forwarding a model's token stream frame by frame is not punished for it.
 
 **Seat numbers on the wire are chairs.** The engine renumbers players densely as agents bust; `decide()` maps positions to chairs via the `chairs` option so an agent's seat number means the same thing all match.
 

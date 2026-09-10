@@ -31,8 +31,15 @@ export interface Askable {
 }
 
 export interface DecideOptions {
-  /** The open connection to this agent, or null when it is not here. */
-  link: Askable | null;
+  /**
+   * The open connection to this agent, resolved on demand.
+   *
+   * A function rather than a value because a socket can drop and come back
+   * inside one decision, and the connection that returns is a different object
+   * from the one that left. Holding the old one would mean a two-second network
+   * blip cost a hand.
+   */
+  link: () => Askable | null;
   state: HandState;
   seatIndex: number;
   bigBlind: number;
@@ -125,9 +132,10 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
     };
   }
 
-  // No socket means the agent left. It still has chips and a seat, because a
-  // match cannot be walked out of, so it plays out as a seat that never acts.
-  if (!link) {
+  // No socket at all means the agent is simply not here. It still has chips and
+  // a seat, because a match cannot be walked out of, so it plays out as a seat
+  // that never acts.
+  if (!link()) {
     return {
       action: defaultAction(legal),
       reasoning: '',
@@ -179,16 +187,29 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
   const signal = options.signal ? AbortSignal.any([options.signal, clock.signal]) : clock.signal;
 
   let reasoning = '';
-  let reply: DecisionFrame | null;
+  const hear = (text: string) => {
+    reasoning += text;
+    options.onToken?.(text);
+  };
+
+  let reply: DecisionFrame | null = null;
   try {
-    reply = await link.ask(
-      frame,
-      (text) => {
-        reasoning += text;
-        options.onToken?.(text);
-      },
-      signal,
-    );
+    // Asked at most twice. A null answer with time still on the clock means the
+    // socket went away rather than the agent thinking too long, so it is given
+    // a moment to come back and is asked again on whatever connection returns.
+    // Beyond that the seat acts without it, because the table cannot wait.
+    for (let attempt = 0; attempt < 2 && !clock.signal.aborted; attempt++) {
+      const open = link();
+      if (!open) {
+        if (attempt === 0) break;
+        continue;
+      }
+
+      reply = await open.ask(frame, hear, signal);
+      if (reply || clock.signal.aborted) break;
+
+      await grace(RECONNECT_GRACE_MS, signal);
+    }
   } finally {
     clearTimeout(timer);
   }
@@ -262,6 +283,29 @@ function forcedMove(legal: LegalActions, equity: Equity): AgentDecision | null {
   }
 
   return null;
+}
+
+/**
+ * How long a dropped socket is given to come back mid-decision.
+ *
+ * Short enough that a genuinely absent agent barely slows the table, long
+ * enough to cover the reconnect a flaky network causes. The act clock is still
+ * the outer bound; this only decides how much of it is spent waiting.
+ */
+const RECONNECT_GRACE_MS = 750;
+
+function grace(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
 }
 
 /** More samples early, when there is more still to come and the number matters most. */

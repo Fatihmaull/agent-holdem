@@ -69,42 +69,6 @@ export function defaultAction(legal: LegalActions): Action {
   return legal.check ? { type: 'check' } : { type: 'fold' };
 }
 
-/**
- * Pulls the first JSON object out of a model's output. Models wrap JSON in
- * prose or fences often enough that failing on it would waste real decisions.
- */
-export function extractJson(text: string): unknown {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const body = fenced ? fenced[1] : text;
-
-  const start = body.indexOf('{');
-  if (start < 0) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = start; i < body.length; i++) {
-    const char = body[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') inString = true;
-    else if (char === '{') depth++;
-    else if (char === '}' && --depth === 0) {
-      try {
-        return JSON.parse(body.slice(start, i + 1));
-      } catch {
-        return null;
-      }
-    }
-  }
-  return null;
-}
-
 function clamp(value: unknown, max: number): string {
   if (typeof value !== 'string') return '';
   const collapsed = value.replace(/\s+/g, ' ').trim();

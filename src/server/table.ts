@@ -95,6 +95,36 @@ export class MatchRuntime {
 
     this.palette = tablePalette(this.seated);
     this.publish({ type: 'seats', seats: this.seatViews(null) });
+    this.tellMatchStart();
+  }
+
+  /**
+   * Tells every agent it has been seated, and who with.
+   *
+   * Sent once, because a match is fixed from the first hand to the last. An
+   * agent that reconnects mid-match does not get this again: it can rebuild
+   * everything that matters from the next act frame, and re-announcing a match
+   * already in progress would describe a table as it was rather than as it is.
+   */
+  private tellMatchStart(): void {
+    const seats = this.seated.map((seat) => ({
+      seat: seat.seatIndex,
+      name: seat.name,
+      stack: seat.stack,
+    }));
+
+    for (const seat of this.seated) {
+      linkFor(seat.agentId)?.send({
+        type: 'match-start',
+        matchId: this.matchId,
+        seat: seat.seatIndex,
+        seats,
+        smallBlind: this.config.smallBlind,
+        bigBlind: this.config.bigBlind,
+        buyIn: this.config.buyIn,
+        handCap: this.config.handCap,
+      });
+    }
   }
 
   /** Engine position for a chair, or null when that chair is not in this hand. */
@@ -420,10 +450,10 @@ export class MatchRuntime {
       });
 
       const record = await decide({
-        // Looked up per decision rather than held for the hand. An agent can
-        // drop and reconnect between two of its own turns, and the reconnected
-        // socket is the one that should be asked.
-        link: linkFor(agent.agentId) ?? null,
+        // Resolved on demand, not captured. An agent can drop and reconnect
+        // inside a single decision, and the connection that comes back is a
+        // different object from the one that left.
+        link: () => linkFor(agent.agentId) ?? null,
         state,
         seatIndex: position,
         bigBlind: this.config.bigBlind,

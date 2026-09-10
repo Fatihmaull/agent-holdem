@@ -30,8 +30,16 @@ export const MAX_FRAME_BYTES = 8_192;
 /** Total reasoning one decision may stream, in bytes. The panel shows far less. */
 export const MAX_REASONING_BYTES = 4_096;
 
-/** Frames per second one connection may send before it is closed. */
-export const MAX_FRAMES_PER_SECOND = 50;
+/**
+ * Frames per second one connection may send before it is closed.
+ *
+ * Loose on purpose. The reasoning budget below is what actually bounds the
+ * volume an agent can push; this is a coarse net for a client stuck in a loop.
+ * Set tight, it would instead punish the ordinary case of an agent forwarding a
+ * model's token stream frame by frame, which is a reasonable thing to write and
+ * a terrible thing to be disconnected for.
+ */
+export const MAX_FRAMES_PER_SECOND = 200;
 
 /**
  * Why the arena hung up.

@@ -1,10 +1,11 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 // Must come before anything that reaches the database module. Nothing here runs
 // a query, but that module refuses to load without a connection string.
 import '../dev/test-env';
 import type { WebSocket } from 'ws';
 import { CLOSE, MAX_FRAMES_PER_SECOND, MAX_REASONING_BYTES, type ActFrame } from '@agentholdem/protocol';
+import { attach, detach, linkFor } from './presence';
 import { SocketLink } from './socket';
 
 /**
@@ -58,7 +59,11 @@ class FakeSocket {
 
 function linked(): { ws: FakeSocket; link: SocketLink } {
   const ws = new FakeSocket();
-  return { ws, link: new SocketLink(ws as unknown as WebSocket, 'agent-1', 'owner-1') };
+  const link = new SocketLink(ws as unknown as WebSocket, 'agent-1', 'owner-1');
+  // The registry is global, so a test that attaches has to leave it as it found
+  // it or the next test inherits a connection it never made.
+  after(() => detach(link));
+  return { ws, link };
 }
 
 const ACT: ActFrame = {
@@ -184,4 +189,34 @@ test('asking again abandons whatever the last question was waiting for', async (
   assert.equal(await first, null, 'or a slow agent leaks one promise per decision, forever');
   clock.abort();
   assert.equal(await second, null);
+});
+
+test('frames that arrived during the handshake are not lost', () => {
+  // A client that pipelines hello and ready does not wait for the welcome, and
+  // authenticating is a database round trip. Without somewhere to put what
+  // arrives in that window, such an agent is welcomed, never queued, and never
+  // told why.
+  const { link } = linked();
+
+  assert.equal(link.ready, false);
+  link.replay([JSON.stringify({ type: 'ready' })]);
+  assert.equal(link.ready, true);
+});
+
+test('a replaced connection does not stamp its goodbye over the live one', () => {
+  const first = linked();
+  const second = linked();
+
+  attach(first.link);
+  attach(second.link);
+
+  // The older socket closes after the newer one has taken its place. What an
+  // owner must not then read is "disconnected" about an agent that is sitting
+  // at a table right now.
+  first.ws.close(CLOSE.REPLACED, 'connected again from somewhere else');
+
+  assert.equal(linkFor('agent-1'), second.link, 'the newer connection survives');
+
+  second.ws.close(1001, 'going away');
+  assert.equal(linkFor('agent-1'), undefined);
 });
