@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# The template is meant to be cloned. Without this the readme's first
+# instruction refers to a file that is not in the repository.
+!.env.example
 
 # vercel
 .vercel
@@ -47,3 +50,4 @@ next-env.d.ts
 
 # docker volumes
 /.data/
+field.json

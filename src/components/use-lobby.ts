@@ -33,10 +33,10 @@ export interface LobbyMatch {
 
 export interface Lobby {
   matches: LobbyMatch[];
-  /** The match this account's agent is playing in, if any. */
-  seatedAt: string | null;
-  /** Whether the owner has their agent switched on. */
-  playing: boolean;
+  /** Matches this account has an agent in. One owner holds at most one seat in each. */
+  mine: string[];
+  /** Whether any of this account's agents is connected and asking for a game. */
+  queued: boolean;
   /** False until the first poll lands, when nothing about the floor is known. */
   loaded: boolean;
   reload: () => void;
@@ -51,8 +51,8 @@ export interface Lobby {
  */
 export function useLobby(): Lobby {
   const [matches, setMatches] = useState<LobbyMatch[]>([]);
-  const [seatedAt, setSeatedAt] = useState<string | null>(null);
-  const [playing, setPlaying] = useState(false);
+  const [mine, setMine] = useState<string[]>([]);
+  const [queued, setQueued] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [reloads, setReloads] = useState(0);
 
@@ -65,15 +65,12 @@ export function useLobby(): Lobby {
 
     const poll = () => {
       fetch('/api/matches', { cache: 'no-store' })
-        .then(
-          (response) =>
-            response.json() as Promise<{ matches: LobbyMatch[]; seatedAt: string | null; playing: boolean }>,
-        )
+        .then((response) => response.json() as Promise<{ matches: LobbyMatch[]; mine: string[]; queued: boolean }>)
         .then((body) => {
           if (cancelled) return;
           setMatches(body.matches);
-          setSeatedAt(body.seatedAt);
-          setPlaying(body.playing);
+          setMine(body.mine);
+          setQueued(body.queued);
           setLoaded(true);
         })
         .catch(() => {});
@@ -87,7 +84,7 @@ export function useLobby(): Lobby {
     };
   }, [reloads]);
 
-  return { matches, seatedAt, playing, loaded, reload };
+  return { matches, mine, queued, loaded, reload };
 }
 
 export function seatsTaken(match: LobbyMatch): number {

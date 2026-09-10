@@ -12,12 +12,12 @@ const config = MATCH;
 
 /** Chairs 1 and 2 occupied, chair 0 vacated: what a seat change leaves behind. */
 function sparseTable() {
-  const runtime = new MatchRuntime('m-1', config, {} as never, {} as never, () => {});
+  const runtime = new MatchRuntime('m-1', config, () => {});
   const internals = runtime as unknown as Record<string, unknown>;
 
   const seated: SeatedAgent[] = [
-    { seatIndex: 1, agentId: 'alice', name: 'Alice', color: 'red', instructions: '', stack: 2000, notesEnabled: true, bustedAtHand: null },
-    { seatIndex: 2, agentId: 'bob', name: 'Bob', color: 'green', instructions: '', stack: 2000, notesEnabled: true, bustedAtHand: null },
+    { seatIndex: 1, agentId: 'alice', name: 'Alice', color: 'red', stack: 2000, bustedAtHand: null },
+    { seatIndex: 2, agentId: 'bob', name: 'Bob', color: 'green', stack: 2000, bustedAtHand: null },
   ];
 
   internals.seated = seated;
@@ -67,13 +67,13 @@ test('the dealer button lands on one chair and only one', () => {
 });
 
 test('two agents wearing one colour are told apart at the table', () => {
-  const runtime = new MatchRuntime('m-1', config, {} as never, {} as never, () => {});
+  const runtime = new MatchRuntime('m-1', config, () => {});
   const internals = runtime as unknown as Record<string, unknown>;
 
   // Past the tenth account, colours are reused. Six of them cannot share a felt.
   internals.seated = [
-    { seatIndex: 0, agentId: 'a', name: 'A', color: 'red', instructions: '', stack: 1, notesEnabled: true, bustedAtHand: null },
-    { seatIndex: 1, agentId: 'b', name: 'B', color: 'red', instructions: '', stack: 1, notesEnabled: true, bustedAtHand: null },
+    { seatIndex: 0, agentId: 'a', name: 'A', color: 'red', stack: 1, bustedAtHand: null },
+    { seatIndex: 1, agentId: 'b', name: 'B', color: 'red', stack: 1, bustedAtHand: null },
   ] satisfies SeatedAgent[];
   internals.palette = tablePalette(internals.seated as SeatedAgent[]);
 
@@ -119,7 +119,7 @@ test('a match announces itself finished exactly once', () => {
   // The loop can reach an ending from several directions at once, and settling
   // twice would return every stack twice.
   const endings: string[] = [];
-  const runtime = new MatchRuntime('m-1', config, {} as never, {} as never, (_id, ending) => {
+  const runtime = new MatchRuntime('m-1', config, (_id, ending) => {
     endings.push(ending);
   });
 

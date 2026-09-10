@@ -4,28 +4,36 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { connect, currentAddress, signMessage, WalletError } from '@/lib/wallet';
 import { useChain } from './chain-context';
 
-interface AccountAgent {
+export interface AccountAgent {
   id: string;
   name: string;
   color: string;
-  instructions: string;
   handsPlayed: number;
   handsWon: number;
   chipsWon: number;
   biggestPot: number;
   /** The published rating, which is what the standings sort on. */
   rating: number;
+  ratingMu: number;
+  ratingSigma: number;
   matchesPlayed: number;
-}
-
-interface AccountState {
-  address: string;
-  chips: number;
-  agent: AccountAgent;
   /** The match it is playing in right now, or null while it waits for one. */
   seat: { matchId: string; seatIndex: number; stack: number } | null;
-  /** Whether its owner has it switched on. Off means it queues for nothing. */
-  playing: boolean;
+  /** Whether a socket for it is open on the arena right now. */
+  connected: boolean;
+  /** Whether it has asked to be queued on that socket. */
+  ready: boolean;
+  lastSeenAt: string | null;
+  /** Why its last connection ended, in a sentence an owner can act on. */
+  lastCloseReason: string | null;
+}
+
+export interface AccountState {
+  address: string;
+  chips: number;
+  agents: AccountAgent[];
+  /** Whether the daily chip claim is available, and when it returns if not. */
+  claim: { available: boolean; nextAt: string | null };
 }
 
 interface AccountContextValue {

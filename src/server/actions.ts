@@ -2,116 +2,164 @@ import { and, eq, inArray, isNotNull, sql as raw } from 'drizzle-orm';
 import { db } from '../db/client';
 import { agents, depositIntents, ledgerEntries, seats, users } from '../db/schema';
 import { conservative } from '../lib/rating';
-import { chipsToWei, packageById, weiToChips } from '../lib/economy';
+import { STARTING_GRANT, chipsToWei, packageById, weiToChips } from '../lib/economy';
 import { chainById } from '../lib/chains';
 import { REQUIRED_CONFIRMATIONS, observeDeposit } from './chain';
 import { UnknownChain, requireChain, vaultAddress, type DeployedChain } from './chains';
 import { bytes32ToIntent, intentToBytes32 } from '../lib/intent';
 import type { Session } from './auth';
-import { setSeeking } from './store';
+import { presenceOf } from './presence';
 
 export class ActionError extends Error {}
+
+export interface AgentSummary {
+  id: string;
+  name: string;
+  color: string;
+  /** The published rating, which is what the standings sort on. */
+  rating: number;
+  ratingMu: number;
+  ratingSigma: number;
+  matchesPlayed: number;
+  handsPlayed: number;
+  handsWon: number;
+  chipsWon: number;
+  biggestPot: number;
+  /** The match it is sitting in right now, or null while it waits for one. */
+  seat: { matchId: string; seatIndex: number; stack: number } | null;
+  /** Whether a socket for it is open on this process. */
+  connected: boolean;
+  /** Whether it has asked to be queued on that socket. */
+  ready: boolean;
+  lastSeenAt: string | null;
+  /** Why its last connection ended, in a sentence an owner can act on. */
+  lastCloseReason: string | null;
+}
 
 export interface Account {
   address: string;
   chips: number;
-  agent: {
-    id: string;
-    name: string;
-    color: string;
-    instructions: string;
-    handsPlayed: number;
-    handsWon: number;
-    chipsWon: number;
-    biggestPot: number;
-    /** The published rating, which is what the standings sort on. */
-    rating: number;
-    matchesPlayed: number;
-  };
-  /** The match it is sitting in right now, or null while it waits for one. */
-  seat: { matchId: string; seatIndex: number; stack: number } | null;
-  /** Whether its owner has it switched on. Off means it queues for nothing. */
-  playing: boolean;
+  agents: AgentSummary[];
+  /** Whether the daily claim is available, and when it comes back if not. */
+  claim: { available: boolean; nextAt: string | null };
 }
 
+/**
+ * Everything the connection console shows.
+ *
+ * Presence comes from the socket registry rather than the database, because a
+ * connection is a fact about this process and writing it down would leave a
+ * stale "connected" behind after any crash.
+ */
 export async function account(session: Session): Promise<Account> {
-  const [row] = await db
+  const [owner] = await db
+    .select({ address: users.address, chips: users.chips, lastClaimAt: users.lastClaimAt })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .limit(1);
+
+  if (!owner) throw new ActionError('That account no longer exists.');
+
+  const rows = await db
     .select({
-      address: users.address,
-      chips: users.chips,
-      agentId: agents.id,
+      id: agents.id,
       name: agents.name,
       color: agents.color,
-      instructions: agents.instructions,
+      ratingMu: agents.ratingMu,
+      ratingSigma: agents.ratingSigma,
+      matchesPlayed: agents.matchesPlayed,
       handsPlayed: agents.handsPlayed,
       handsWon: agents.handsWon,
       chipsWon: agents.chipsWon,
       biggestPot: agents.biggestPot,
-      seeking: agents.seeking,
-      ratingMu: agents.ratingMu,
-      ratingSigma: agents.ratingSigma,
-      matchesPlayed: agents.matchesPlayed,
+      lastSeenAt: agents.lastSeenAt,
+      lastCloseReason: agents.lastCloseReason,
+      matchId: seats.matchId,
+      seatIndex: seats.seatIndex,
+      stack: seats.stack,
     })
-    .from(users)
-    .innerJoin(agents, eq(agents.userId, users.id))
-    .where(eq(users.id, session.userId))
-    .limit(1);
-
-  if (!row) throw new ActionError('That account no longer exists.');
-
-  const [seat] = await db
-    .select({ matchId: seats.matchId, seatIndex: seats.seatIndex, stack: seats.stack })
-    .from(seats)
-    .where(eq(seats.agentId, row.agentId))
-    .limit(1);
+    .from(agents)
+    .leftJoin(seats, eq(seats.agentId, agents.id))
+    .where(eq(agents.userId, session.userId))
+    .orderBy(agents.createdAt);
 
   return {
-    address: row.address,
-    chips: row.chips,
-    agent: {
-      id: row.agentId,
-      name: row.name,
-      color: row.color,
-      instructions: row.instructions,
-      handsPlayed: row.handsPlayed,
-      handsWon: row.handsWon,
-      chipsWon: row.chipsWon,
-      biggestPot: row.biggestPot,
-      rating: conservative({ mu: row.ratingMu, sigma: row.ratingSigma }),
-      matchesPlayed: row.matchesPlayed,
-    },
-    seat: seat ?? null,
-    playing: row.seeking,
+    address: owner.address,
+    chips: owner.chips,
+    claim: claimStatus(owner.lastClaimAt),
+    agents: rows.map((row) => {
+      const presence = presenceOf(row.id);
+      return {
+        id: row.id,
+        name: row.name,
+        color: row.color,
+        rating: conservative({ mu: row.ratingMu, sigma: row.ratingSigma }),
+        ratingMu: row.ratingMu,
+        ratingSigma: row.ratingSigma,
+        matchesPlayed: row.matchesPlayed,
+        handsPlayed: row.handsPlayed,
+        handsWon: row.handsWon,
+        chipsWon: row.chipsWon,
+        biggestPot: row.biggestPot,
+        seat: row.matchId ? { matchId: row.matchId, seatIndex: row.seatIndex!, stack: row.stack! } : null,
+        connected: presence.connected,
+        ready: presence.ready,
+        lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+        lastCloseReason: row.lastCloseReason,
+      };
+    }),
   };
 }
 
 /**
- * Switches an agent on or off.
+ * Tops an account back up, at most once a day.
  *
- * The only lever an owner has over where their agent plays, now that the arena
- * decides that. Off means it stops queueing once its current match ends: a
- * match cannot be walked out of, so this never interrupts one in progress.
+ * Chips buy a seat and nothing else, and an owner whose agents have all busted
+ * has nothing to learn from waiting. Buying chips on chain is still worth doing
+ * because it lands immediately and is not capped at one grant a day.
  */
-export async function setPlaying(session: Session, playing: boolean): Promise<{ playing: boolean }> {
-  const [agent] = await db.select({ id: agents.id }).from(agents).where(eq(agents.userId, session.userId)).limit(1);
-  if (!agent) throw new ActionError('That account has no agent.');
+export async function claimChips(session: Session): Promise<{ chips: number; claimed: number }> {
+  return db.transaction(async (tx) => {
+    const [owner] = await tx
+      .select({ chips: users.chips, lastClaimAt: users.lastClaimAt })
+      .from(users)
+      .where(eq(users.id, session.userId))
+      .for('update')
+      .limit(1);
 
-  await setSeeking(agent.id, playing);
-  return { playing };
+    if (!owner) throw new ActionError('That account no longer exists.');
+    if (!claimStatus(owner.lastClaimAt).available) {
+      throw new ActionError('The daily claim has already been taken. Try again tomorrow.');
+    }
+
+    const [updated] = await tx
+      .update(users)
+      .set({ chips: raw`${users.chips} + ${STARTING_GRANT}`, lastClaimAt: new Date() })
+      .where(eq(users.id, session.userId))
+      .returning({ chips: users.chips });
+
+    await tx.insert(ledgerEntries).values({
+      userId: session.userId,
+      delta: STARTING_GRANT,
+      balanceAfter: updated.chips,
+      reason: 'grant',
+      reference: 'daily-claim',
+    });
+
+    return { chips: updated.chips, claimed: STARTING_GRANT };
+  });
 }
 
-const MAX_NAME = 24;
-const MAX_INSTRUCTIONS = 2000;
+function claimStatus(lastClaimAt: Date | null): { available: boolean; nextAt: string | null } {
+  if (!lastClaimAt) return { available: true, nextAt: null };
 
-export async function saveAgent(session: Session, input: { name: string; instructions: string }): Promise<void> {
-  const name = input.name.trim().replace(/\s+/g, ' ').slice(0, MAX_NAME);
-  if (name.length < 2) throw new ActionError('Give your agent a name of at least two characters.');
-
-  await db
-    .update(agents)
-    .set({ name, instructions: input.instructions.slice(0, MAX_INSTRUCTIONS), updatedAt: new Date() })
-    .where(eq(agents.userId, session.userId));
+  const next = lastClaimAt.getTime() + CLAIM_INTERVAL_MS;
+  return next <= Date.now()
+    ? { available: true, nextAt: null }
+    : { available: false, nextAt: new Date(next).toISOString() };
 }
+
+const CLAIM_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The chain a request asked to settle on.

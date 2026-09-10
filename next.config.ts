@@ -35,6 +35,10 @@ const csp = [
 const nextConfig: NextConfig = {
   reactCompiler: true,
 
+  // The protocol package ships TypeScript source rather than a build, so that
+  // one edit to a frame fails to compile on both sides at once.
+  transpilePackages: ['@agentholdem/protocol'],
+
   async headers() {
     return [
       {

@@ -1,11 +1,12 @@
 import { MAX_SEATS, MIN_SEATS } from '../lib/economy';
+import { linkFor, readyAgentIds } from './presence';
 import { closeMatch, openMatch } from './registry';
+import { conservative } from '../lib/rating';
 import {
   createMatch,
   liveMatchIds,
   queuedAgents,
   settleMatch,
-  topUpLapsedAccounts,
   type Candidate,
   type MatchEnding,
 } from './store';
@@ -51,15 +52,12 @@ const BAND_START = 6;
 /** How much the band opens up for every minute somebody has been waiting. */
 const BAND_GROWTH_PER_MINUTE = 6;
 
-/** Lapsed accounts are topped back up once a day, not once a tick. */
-const TOP_UP_INTERVAL_MS = 24 * 60 * 60 * 1000;
-
 const globalForFloor = globalThis as unknown as {
-  __agentholdemFloor?: { timer: NodeJS.Timeout | null; lastTopUp: number };
+  __agentholdemFloor?: { timer: NodeJS.Timeout | null };
 };
 
-function floor(): { timer: NodeJS.Timeout | null; lastTopUp: number } {
-  if (!globalForFloor.__agentholdemFloor) globalForFloor.__agentholdemFloor = { timer: null, lastTopUp: 0 };
+function floor(): { timer: NodeJS.Timeout | null } {
+  if (!globalForFloor.__agentholdemFloor) globalForFloor.__agentholdemFloor = { timer: null };
   return globalForFloor.__agentholdemFloor;
 }
 
@@ -102,14 +100,17 @@ export async function abandonOrphanedMatches(): Promise<number> {
 }
 
 async function tick(): Promise<void> {
-  const state = floor();
-  if (Date.now() - state.lastTopUp > TOP_UP_INTERVAL_MS) {
-    state.lastTopUp = Date.now();
-    const topped = await topUpLapsedAccounts();
-    if (topped > 0) console.log(`[matchmaker] topped up ${topped} account${topped === 1 ? '' : 's'}`);
-  }
+  // Chips are not topped up here. An owner claims them, once a day, from their
+  // own page. A refill that happened on its own would make the claim pointless
+  // and would quietly hand chips to accounts nobody is using.
 
-  const waiting = await queuedAgents();
+  // Readiness is a fact about the sockets this process holds, so it is read
+  // from the connections rather than from a column. An agent that is not here
+  // cannot be seated, because a match cannot be left once it starts.
+  const ready = readyAgentIds();
+  if (ready.length < MIN_SEATS) return;
+
+  const waiting = await queuedAgents(ready);
   if (waiting.length < MIN_SEATS) return;
 
   for (const group of groupsFrom(waiting)) {
@@ -185,6 +186,21 @@ function onFinished(matchId: string, ending: MatchEnding, hands: number): void {
   void (async () => {
     try {
       const finishes = await settleMatch(matchId, ending, hands);
+
+      // Told after settling, because the rating in the frame is the one the
+      // match produced and it does not exist until the finishing order does.
+      for (const finish of finishes) {
+        linkFor(finish.agentId)?.send({
+          type: 'match-end',
+          matchId,
+          ending,
+          handsPlayed: hands,
+          place: finish.place,
+          entrants: finishes.length,
+          finalStack: finish.finalStack,
+          rating: { before: conservative(finish.before), after: conservative(finish.after) },
+        });
+      }
 
       for (const finish of finishes.sort((a, b) => a.place - b.place)) {
         const moved = finish.after.mu - finish.before.mu;

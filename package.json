@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "tsx watch --clear-screen=false server.ts",
     "build": "next build",
-    "start": "next start",
+    "start": "NODE_ENV=production tsx server.ts",
     "lint": "eslint",
     "test": "tsx --test 'src/**/*.test.ts'",
     "test:contracts": "cd contracts && forge test",
@@ -17,6 +17,7 @@
     "attest": "tsx src/dev/attest.ts"
   },
   "dependencies": {
+    "@agentholdem/protocol": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "jose": "^6.2.12",
     "next": "16.3.4",
@@ -24,21 +25,26 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "siwe": "^3.0.0",
-    "viem": "^2.56.3"
+    "tsx": "^4.23.13",
+    "viem": "^2.56.3",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
     "babel-plugin-react-compiler": "1.0.0",
     "dotenv": "^17.4.2",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
-    "tsx": "^4.23.13",
     "typescript": "^5"
   },
-  "packageManager": "pnpm@10.30.3"
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=24"
+  }
 }

@@ -2,10 +2,8 @@ import { cardName, type Card } from '../poker/cards';
 import { applyAction, legalActions, startHand, totalPot, type HandState, type Street } from '../poker/engine';
 import { describe as describeHand, evaluate } from '../poker/evaluate';
 import { conservative } from '../lib/rating';
-import { decide, reviseNotes, type DecisionRecord } from '../agent/decide';
+import { decide, type DecisionRecord } from '../agent/decide';
 import { OPPONENT_COLORS } from '../agent/colors';
-import type { ModelProvider } from '../agent/provider';
-import type { ModelQueue } from '../agent/queue';
 import { type MatchConfig, stakesLabel } from '../lib/economy';
 import {
   ACTION_BEAT_MS,
@@ -13,7 +11,6 @@ import {
   AWARD_BEAT_MS,
   BETWEEN_HANDS_MS,
   HAND_END_BEAT_MS,
-  NOTE_CLOCK_MS,
   REVEAL_BEAT_MS,
   SHOWDOWN_BEAT_MS,
   STREET_BEAT_MS,
@@ -24,17 +21,16 @@ import { TableBus } from './bus';
 import {
   bustSeat,
   clearInHand,
-  loadNotes,
   loadSeats,
   markInHand,
   ratingsOf,
   recordResults,
   saveHand,
-  saveNote,
   saveStacks,
   type MatchEnding,
   type SeatedAgent,
 } from './store';
+import { linkFor } from './presence';
 import type { ArenaEvent, BrainView, LogLine, SeatStatus, SeatView, TableView } from './view';
 
 export class MatchRuntime {
@@ -78,8 +74,6 @@ export class MatchRuntime {
   constructor(
     readonly matchId: string,
     readonly config: MatchConfig,
-    private readonly provider: ModelProvider,
-    private readonly queue: ModelQueue,
     /** Called once the match is over, so the matchmaker can close it out. */
     private readonly onFinished: (matchId: string, ending: MatchEnding, hands: number) => void,
   ) {}
@@ -321,29 +315,6 @@ export class MatchRuntime {
     this.onFinished(this.matchId, ending, this.handNumber);
   }
 
-  /**
-   * What each agent at this table remembers about the others, by author then
-   * by subject. The control arm is simply absent, so it sits down knowing
-   * nobody.
-   */
-  private async loadTableNotes(lineup: SeatedAgent[]): Promise<Map<string, Map<string, string>>> {
-    const notes = new Map<string, Map<string, string>>();
-
-    for (const reader of lineup) {
-      if (!reader.notesEnabled) continue;
-      const subjects = lineup.filter((seat) => seat.agentId !== reader.agentId).map((seat) => seat.agentId);
-      try {
-        notes.set(reader.agentId, await loadNotes(this.matchId, reader.agentId, subjects));
-      } catch (error) {
-        // A memory that will not load is one agent playing this hand blind,
-        // which is a worse hand for that agent rather than a stalled table.
-        console.error(`[${this.matchId}] could not read notes for ${reader.name}`, error);
-      }
-    }
-
-    return notes;
-  }
-
   private async playHand(): Promise<void> {
     // Only seats with chips left. Everyone else is eliminated and stays on the
     // record of where they finished rather than being dealt to.
@@ -404,11 +375,6 @@ export class MatchRuntime {
       seats: this.seatViews(null),
     });
 
-    // Read once for the hand. An agent only writes between hands, so its notes
-    // cannot change while it is playing and re-reading them every turn would
-    // fetch identical rows two or three times a hand.
-    const notes = await this.loadTableNotes(lineup);
-
     const recorded: Array<{ seatIndex: number; agentId: string; record: DecisionRecord; street: string }> = [];
     let eventCursor = state.events.length;
     let street: Street = state.street;
@@ -454,15 +420,19 @@ export class MatchRuntime {
       });
 
       const record = await decide({
-        agent: { id: agent.agentId, name: agent.name, instructions: agent.instructions },
+        // Looked up per decision rather than held for the hand. An agent can
+        // drop and reconnect between two of its own turns, and the reconnected
+        // socket is the one that should be asked.
+        link: linkFor(agent.agentId) ?? null,
         state,
         seatIndex: position,
         bigBlind: this.config.bigBlind,
         clockMs: ACT_CLOCK_MS,
+        matchId: this.matchId,
+        handNumber: this.handNumber,
+        chairs: lineup.map((seat) => seat.seatIndex),
         opponentNames: new Map(lineup.map((seat) => [seat.agentId, seat.name])),
-        notes: notes.get(agent.agentId),
-        provider: this.provider,
-        queue: this.queue,
+        opponentTiming: new Map([...this.timing].map(([chair, entry]) => [chair, entry.elapsedMs])),
         signal: this.stopping.signal,
         onEquity: (equity, read) => {
           if (this.brain?.seat === chair) {
@@ -558,8 +528,60 @@ export class MatchRuntime {
     }
 
     await this.settleOnScreen(state, lineup);
-    const handId = await this.persist({ lineup, state, seed, startedAt, recorded });
-    await this.writeNotes({ lineup, state, recorded, notes, handId });
+    // Told before the stacks are written back, because persisting rewrites the
+    // roster's stacks in place and the frame needs what each seat came in with
+    // to say what the hand cost them.
+    this.tellHandResult(lineup, state);
+    await this.persist({ lineup, state, seed, startedAt, recorded });
+  }
+
+  /**
+   * Tells every agent in the hand how it ended.
+   *
+   * Only what the table actually saw. The engine already decided who had to
+   * show, so the mucked hands stay mucked here too: publishing them would hand
+   * back exactly what mucking withholds, to opponents still sitting in the same
+   * match.
+   */
+  private tellHandResult(lineup: SeatedAgent[], state: HandState): void {
+    const shown = state.events
+      .filter((event) => event.type === 'showdown')
+      .map((event) => ({
+        seat: this.chairOf(event.seat),
+        name: lineup[event.seat]?.name ?? `seat ${event.seat + 1}`,
+        hole: event.hole.map(cardName) as [string, string],
+      }));
+
+    const pots = new Map<number, number>();
+    for (const event of state.events) {
+      if (event.type === 'award') pots.set(event.seat, (pots.get(event.seat) ?? 0) + event.amount);
+    }
+    const winners = [...pots].map(([position, amount]) => ({
+      seat: this.chairOf(position),
+      name: lineup[position]?.name ?? `seat ${position + 1}`,
+      amount,
+    }));
+
+    const board = state.board.map(cardName);
+    const showdown = shown.length > 0;
+
+    for (const [position, seat] of lineup.entries()) {
+      const link = linkFor(seat.agentId);
+      if (!link) continue;
+
+      const finished = state.seats[position];
+      link.send({
+        type: 'hand-result',
+        matchId: this.matchId,
+        handNumber: this.handNumber,
+        board,
+        net: finished.stack - seat.stack,
+        stack: finished.stack,
+        showdown,
+        shown,
+        winners,
+      });
+    }
   }
 
   /**
@@ -570,70 +592,6 @@ export class MatchRuntime {
    * together rather than one after another: they are independent, and serialised
    * they could hold the table for as long as it takes several agents to write.
    */
-  private async writeNotes(context: {
-    lineup: SeatedAgent[];
-    state: HandState;
-    recorded: Array<{ agentId: string; record: DecisionRecord }>;
-    notes: Map<string, Map<string, string>>;
-    handId: string;
-  }): Promise<void> {
-    const { lineup, state, recorded, notes, handId } = context;
-
-    const asked = new Set(
-      recorded.filter((entry) => entry.record.remember === true).map((entry) => entry.agentId),
-    );
-    const writers = lineup.filter(
-      (seat) => asked.has(seat.agentId) && seat.notesEnabled,
-    );
-    if (writers.length === 0) return;
-
-    const hand = summariseHand(state, lineup);
-
-    await Promise.all(
-      writers.map(async (writer) => {
-        // Absent means the read failed at the start of the hand, not that this
-        // agent remembers nobody. Writing from here would show it a blank slate
-        // and let it replace real notes with first impressions, so a hand whose
-        // memory could not be read is a hand it does not get to rewrite.
-        const held = notes.get(writer.agentId);
-        if (held === undefined) return;
-
-        const opponents = lineup
-          .filter((seat) => seat.agentId !== writer.agentId)
-          .map((seat) => ({ name: seat.name, note: held.get(seat.agentId) ?? null }));
-
-        const { updates, failure } = await reviseNotes({
-          agent: { id: writer.agentId, name: writer.name, instructions: writer.instructions },
-          hand,
-          opponents,
-          clockMs: NOTE_CLOCK_MS,
-          provider: this.provider,
-          queue: this.queue,
-          signal: this.stopping.signal,
-        });
-
-        if (failure) {
-          console.error(`[${this.matchId}] ${writer.name} could not write its notes: ${failure}`);
-          return;
-        }
-
-        // Names came back from the model, so they are matched against the seats
-        // rather than trusted: a note is only ever written about somebody this
-        // agent actually just played.
-        const byName = new Map(lineup.map((seat) => [seat.name, seat.agentId]));
-        for (const update of updates) {
-          const subjectId = byName.get(update.name);
-          if (subjectId === undefined || subjectId === writer.agentId) continue;
-          try {
-            await saveNote({ matchId: this.matchId, authorId: writer.agentId, subjectId, text: update.text, handId });
-          } catch (error) {
-            console.error(`[${this.matchId}] could not store a note for ${writer.name}`, error);
-          }
-        }
-      }),
-    );
-  }
-
   /** Streets and showdowns land as their own beats rather than inside a decision. */
   private async flushBoardEvents(state: HandState, cursor: number): Promise<number> {
     for (let i = cursor; i < state.events.length; i++) {
@@ -847,48 +805,6 @@ function lastActionEvent(state: HandState, from: number): { action: string; amou
     if (event.type === 'action') return { action: event.action, amount: event.amount, to: event.to };
   }
   return null;
-}
-
-/**
- * The hand as a player who sat through it would recount it. Built from the
- * engine's own events rather than from the display log, so it carries what
- * happened rather than what the ticker had room for.
- *
- * Only cards the engine actually turned over appear here. A hand that was
- * mucked stays mucked, so an agent writing its notes knows exactly what the
- * table knows and nothing more.
- */
-function summariseHand(state: HandState, lineup: SeatedAgent[]): string[] {
-  const nameOf = (position: number) => lineup[position]?.name ?? `seat ${position + 1}`;
-  const lines: string[] = [];
-
-  for (const event of state.events) {
-    switch (event.type) {
-      case 'blind':
-        lines.push(`${nameOf(event.seat)} posts the ${event.kind} blind, ${event.amount}.`);
-        break;
-      case 'street':
-        lines.push(`${event.street}: ${event.cards.map(cardName).join(' ') || 'no new cards'}`);
-        break;
-      case 'action':
-        lines.push(describeAction(nameOf(event.seat), event.action, event.amount));
-        break;
-      case 'showdown':
-        lines.push(
-          `${nameOf(event.seat)} shows ${event.hole.map(cardName).join(' ')} for ${describeHand(event.score)}.`,
-        );
-        break;
-      case 'award':
-        lines.push(
-          event.uncontested
-            ? `${nameOf(event.seat)} wins ${event.amount}, everyone else folded.`
-            : `${nameOf(event.seat)} wins ${event.amount} at showdown.`,
-        );
-        break;
-    }
-  }
-
-  return lines;
 }
 
 function describeAction(name: string, action: string, amount: number): string {

@@ -22,14 +22,14 @@ import { seatLabel } from './use-match-stream';
 
 export function Felt({
   table,
-  myAgentId,
+  myAgentIds,
   idleReason,
   moved,
   potKey,
   actionKeys,
 }: {
   table: TableView | null;
-  myAgentId: string | null;
+  myAgentIds: ReadonlySet<string>;
   idleReason: string | null;
   /** Seats whose stack changed on the last event, so the figure settles once. */
   moved: number[];
@@ -42,7 +42,7 @@ export function Felt({
   const box = useFeltBox(felt, table?.seats.length ?? 6);
   const flights = useChipFlights(table);
 
-  const focus = table?.seats.findIndex((seat) => seat.agentId && seat.agentId === myAgentId) ?? -1;
+  const focus = table?.seats.findIndex((seat) => seat.agentId && myAgentIds.has(seat.agentId)) ?? -1;
   const anchor = focus >= 0 ? focus : 0;
   const seated = table?.seats.filter((seat) => seat.agentId).length ?? 0;
 
@@ -90,7 +90,7 @@ export function Felt({
                 // the left of the table is laid out the mirror of one on the
                 // right and both read outwards from the cloth.
                 mirrored={seatAngle(seat.index, anchor, table.seats.length).cos > 0.01}
-                isMine={Boolean(seat.agentId && seat.agentId === myAgentId)}
+                isMine={Boolean(seat.agentId && myAgentIds.has(seat.agentId))}
                 settling={moved.includes(seat.index)}
                 actionKey={actionKeys[seat.index] ?? 0}
                 // Cards are dealt out of the middle of the table, so a seat has
@@ -128,7 +128,7 @@ export function Felt({
                   key={seat.index}
                   seat={seat}
                   table={table}
-                  isMine={Boolean(seat.agentId && seat.agentId === myAgentId)}
+                  isMine={Boolean(seat.agentId && myAgentIds.has(seat.agentId))}
                   actionKey={actionKeys[seat.index] ?? 0}
                 />
               ))}

@@ -53,18 +53,18 @@ function Hero() {
     <section className="border-b border-line">
       <div className="mx-auto grid w-full max-w-[84rem] items-center gap-10 px-4 py-12 sm:px-6 sm:py-16 lg:grid-cols-[1.05fr_minmax(0,27rem)] lg:gap-14">
         <div>
-          <h1 className="max-w-[16ch] text-[clamp(2rem,4.6vw,3.1rem)] text-ink">
-            Write how your agent plays. It plays every hand for you.
+          <h1 className="max-w-[18ch] text-[clamp(2rem,4.6vw,3.1rem)] text-ink">
+            Bring your poker agent. Find out how good it is.
           </h1>
 
           <p className="mt-5 max-w-[52ch] text-base text-muted sm:text-lg">
-            You never click fold or raise. You write a page of plain English, switch your agent on, and read
-            the reasoning behind every decision it makes.
+            Connect your agent over a socket and the arena does the rest: it matches you against opponents of
+            similar strength, deals the hands, and publishes a rating that says how you actually did.
           </p>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Button tone="primary" size="lg" onClick={() => void signIn()} disabled={connecting}>
-              {connecting ? 'Check your wallet' : 'Create your agent'}
+              {connecting ? 'Check your wallet' : 'Get a token'}
             </Button>
             <ButtonLink href="/matches" size="lg">
               Watch a match
@@ -86,16 +86,16 @@ function Hero() {
 /** Three steps, in the order they happen. The numbering is the sequence, not decoration. */
 const STEPS = [
   {
-    title: 'Write the strategy',
-    body: 'Describe how it should play in plain English: which hands to raise, how much to bet, when to bluff and when to give up.',
+    title: 'Connect your agent',
+    body: 'It opens a socket to the arena and answers when asked. No public address, no certificate: a laptop plays as well as a server. Clone the reference agent or write your own.',
   },
   {
-    title: 'Switch it on',
-    body: 'The arena matches it against agents of similar rating and buys it in with your chips. It cannot pick its own game, and it cannot leave one.',
+    title: 'The arena seats it',
+    body: 'You never pick a game. It is matched against agents of similar rating and bought in with your chips. Once a match starts nobody joins and nobody leaves.',
   },
   {
-    title: 'Watch every decision',
-    body: 'Read its reasoning as it decides, next to the equity the engine computed and the action it settled on.',
+    title: 'Watch, and get rated',
+    body: 'Read its reasoning as it decides, beside the equity the engine computed. When the match ends the finishing order rewrites everybody’s rating.',
   },
 ];
 
@@ -103,7 +103,7 @@ function HowItWorks() {
   return (
     <section className="border-b border-line">
       <div className="mx-auto w-full max-w-[84rem] px-4 py-14 sm:px-6">
-        <SectionHeading title="How it works" sub="You do the first step once. The other two repeat." />
+        <SectionHeading title="How it works" sub="You do the first step once. The other two repeat forever." />
         <ol className="grid gap-x-10 gap-y-8 md:grid-cols-3">
           {STEPS.map((step, index) => (
             <li key={step.title} className="border-t border-line-strong pt-4">
@@ -120,13 +120,24 @@ function HowItWorks() {
   );
 }
 
-/** The signed-in header: what your agent is, where it is, and how it is doing. */
+/** The signed-in header: what your agents are doing, and whether they are here. */
 function AgentSummary() {
   const { account } = useAccount();
   if (!account) return null;
 
-  const { agent, seat } = account;
-  const winRate = agent.handsPlayed > 0 ? `${Math.round((agent.handsWon / agent.handsPlayed) * 100)}%` : '—';
+  const playing = account.agents.find((agent) => agent.seat);
+  const connected = account.agents.filter((agent) => agent.connected).length;
+  const totals = account.agents.reduce(
+    (sum, agent) => ({
+      hands: sum.hands + agent.handsPlayed,
+      won: sum.won + agent.handsWon,
+      chips: sum.chips + agent.chipsWon,
+      matches: sum.matches + agent.matchesPlayed,
+    }),
+    { hands: 0, won: 0, chips: 0, matches: 0 },
+  );
+  const winRate = totals.hands > 0 ? `${Math.round((totals.won / totals.hands) * 100)}%` : '—';
+  const best = [...account.agents].sort((a, b) => b.rating - a.rating)[0];
 
   return (
     <section className="border-b border-line bg-surface/40">
@@ -134,24 +145,33 @@ function AgentSummary() {
         <Card className="p-5 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-x-8 gap-y-5">
             <div className="min-w-0">
-              <p className="label text-faint">Your agent</p>
-              <div className="mt-2 flex items-center gap-2.5">
-                <ChipDot color={agent.color} size={22} />
-                <h1 className="truncate text-2xl text-ink">{agent.name}</h1>
+              <p className="label text-faint">Your agents</p>
+              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+                {account.agents.slice(0, 6).map((agent) => (
+                  <span key={agent.id} className="flex items-center gap-2">
+                    <ChipDot color={agent.color} size={18} empty={!agent.connected} />
+                    <span className="truncate text-base text-ink">{agent.name}</span>
+                  </span>
+                ))}
+                {account.agents.length === 0 ? (
+                  <span className="text-base text-muted">None registered yet.</span>
+                ) : null}
               </div>
               <p className="mt-2 text-sm text-muted">
-                {seat
-                  ? 'In a match right now.'
-                  : account.playing
-                    ? 'Waiting for a match. The arena will put it in the next one.'
-                    : 'Switched off. Turn it on and it will be entered into the next match.'}
+                {playing
+                  ? 'One of them is in a match right now.'
+                  : connected > 0
+                    ? `${connected} connected and waiting for a match.`
+                    : account.agents.length > 0
+                      ? 'None connected. An agent plays only while its socket is open.'
+                      : 'Register one and point it at the arena to start playing.'}
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <ButtonLink href="/agent">Edit instructions</ButtonLink>
-              {seat ? (
-                <ButtonLink tone="primary" href={`/match/${seat.matchId}`}>
+              <ButtonLink href="/agent">{account.agents.length > 0 ? 'Manage agents' : 'Add an agent'}</ButtonLink>
+              {playing?.seat ? (
+                <ButtonLink tone="primary" href={`/match/${playing.seat.matchId}`}>
                   Watch it play
                 </ButtonLink>
               ) : (
@@ -164,16 +184,13 @@ function AgentSummary() {
 
           <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-5 border-t border-line pt-5 sm:grid-cols-4">
             <Stat
-              label="Rating"
-              value={agent.matchesPlayed > 0 ? agent.rating.toFixed(1) : '—'}
-              hint={`${agent.matchesPlayed.toLocaleString('en-US')} match${agent.matchesPlayed === 1 ? '' : 'es'}`}
+              label="Best rating"
+              value={best && best.matchesPlayed > 0 ? best.rating.toFixed(1) : '—'}
+              hint={`${totals.matches.toLocaleString('en-US')} match${totals.matches === 1 ? '' : 'es'}`}
             />
-            <Stat label="Hands played" value={agent.handsPlayed.toLocaleString('en-US')} />
-            <Stat label="Hands won" value={winRate} hint={`${agent.handsWon.toLocaleString('en-US')} of them`} />
-            <Stat
-              label="Net chips"
-              value={`${agent.chipsWon >= 0 ? '+' : ''}${formatChips(agent.chipsWon)}`}
-            />
+            <Stat label="Hands played" value={totals.hands.toLocaleString('en-US')} />
+            <Stat label="Hands won" value={winRate} hint={`${totals.won.toLocaleString('en-US')} of them`} />
+            <Stat label="Net chips" value={`${totals.chips >= 0 ? '+' : ''}${formatChips(totals.chips)}`} />
           </dl>
         </Card>
       </div>
@@ -193,9 +210,9 @@ function facts(networkName: string, symbol: string) {
       answer: `One chip is always 0.00001 ${symbol}, so a pot is never worth guessing at. Buy them at the cashier. There is no cash out: the vault has no function that pays a player, so what a chip buys is a seat and a place on the record.`,
     },
     {
-      question: 'Can the model just make up a bet?',
+      question: 'Can an agent just make up a bet?',
       answer:
-        'No. The engine works out what the hand is worth and which moves are legal before the model is asked anything. A reply that is not one of those moves is thrown away, and the seat checks if checking is free and folds if it is not.',
+        'No. The arena works out what the hand is worth and which moves are legal before it asks anything. A reply that is not one of those moves is thrown away, and the seat checks if checking is free and folds if it is not. A hostile agent can play badly and nothing else.',
     },
     {
       question: 'Is any of this real money?',
@@ -207,9 +224,9 @@ function facts(networkName: string, symbol: string) {
         'Yes, from the header. Your chips, your agent and any match it is in are unaffected: the network only decides where a deposit is paid in.',
     },
     {
-      question: 'What happens to my agent when I close the tab?',
+      question: 'What happens if my agent disconnects mid-match?',
       answer:
-        'It keeps playing. Matches are dealt on the server whether or not anyone is watching, and a match cannot be walked out of, so it finishes the one it is in and is entered into the next while you are away.',
+        'It has a moment to reconnect. Past that its seat folds every hand until the match ends, and it keeps whatever finishing position that earns. A match cannot be abandoned by one player leaving, or anyone losing could end a game by pulling their own plug.',
     },
   ];
 }
@@ -245,7 +262,7 @@ function Footer() {
     <footer className="border-t border-line">
       <div className="mx-auto flex w-full max-w-[84rem] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-8 text-sm text-faint sm:px-6">
         <span className="font-medium text-muted">AgentHoldem</span>
-        <span>No-Limit Texas Hold’em, played by language models.</span>
+        <span>No-Limit Texas Hold’em, played by autonomous agents.</span>
         <span className="mono ml-auto text-xs">1 chip = 0.00001 {chain?.nativeCurrency.symbol ?? 'native token'}</span>
       </div>
     </footer>

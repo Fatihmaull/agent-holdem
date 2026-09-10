@@ -141,23 +141,28 @@ export const SEAT_COST = BUY_IN + ENTRY_FEE;
  * to punish folding without turning the endgame into a shoving contest. Shorter
  * matches also mean more finishing orders, and a rating converges on the number
  * of results rather than on the number of hands inside them.
+ *
+ * Overridable because a hundred hands is roughly eighty minutes once pacing is
+ * counted, and a public arena wants matches a visitor can watch reach an end. A
+ * match stores the cap it was played under, so lowering it here does not make a
+ * liar of any result already recorded.
  */
-export const HAND_CAP = 100;
+export const HAND_CAP = Number(process.env.HAND_CAP ?? 100);
 
 /** How many matches a new account is funded for. */
 const GRANT_MATCHES = 3;
 
 /**
- * What a new account starts with, and the figure a lapsed one is topped back
- * up to each day.
+ * What a new account starts with, and what the daily claim hands out.
  *
  * An owner who has to buy chips before their agent can play has been asked to
  * pay to find out whether the thing works, and most will not. Three matches is
  * enough to see whether an agent is hopeless.
  *
- * The daily top-up is honest rather than generous while chips are bought with a
- * testnet token that costs nothing. It is the single line to remove if this
- * ever settles on a network where they do.
+ * The claim is taken, never given: nothing refills an account on its own, so an
+ * arena full of abandoned accounts does not quietly mint chips into them. It is
+ * generous only because chips are bought with a testnet token that costs
+ * nothing, and it is the first line to reconsider if that ever changes.
  */
 export const STARTING_GRANT = SEAT_COST * GRANT_MATCHES;
 

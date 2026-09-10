@@ -47,6 +47,15 @@ export const users = pgTable(
     /** Lowercase checksum-stripped address. One account per wallet. */
     address: text('address').notNull(),
     chips: integer('chips').notNull().default(0),
+    /**
+     * When this account last took the daily chip claim.
+     *
+     * On the account rather than derived from the ledger, because the check
+     * runs on every claim and scanning a growing ledger to answer "was it
+     * today" would get slower for no reason. The ledger still records the
+     * movement; this only records when.
+     */
+    lastClaimAt: timestamp('last_claim_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex('users_address_idx').on(table.address)],
@@ -64,21 +73,21 @@ export const agents = pgTable(
     /** Chip colour that identifies this agent at every table. */
     color: text('color').notNull(),
     /**
-     * False runs this agent with no memory of anyone. Kept as a permanent
-     * control arm rather than a scheduled experiment: whether remembering
-     * opponents actually helps is a claim the arena should be able to answer
-     * about itself at any moment, from agents playing the same field.
+     * SHA-256 of the token this agent connects with. Never the token itself:
+     * a database that leaks should not hand out working credentials, and an
+     * owner who loses theirs rotates rather than asks us to look it up.
      */
-    notesEnabled: boolean('notes_enabled').notNull().default(true),
+    tokenHash: text('token_hash').notNull(),
+    /** Last time a socket for this agent was open. Null if it has never connected. */
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     /**
-     * Whether this agent is looking for a game. False only when its owner took
-     * it off a table by hand, which means stop playing.
+     * Why the last connection ended, in a sentence.
      *
-     * Durable rather than held in memory because it gates spending the owner's
-     * API key: a restart that forgot a recall would put the agent back in the
-     * room and start billing them for decisions they asked to stop.
+     * Kept because the alternative is an owner watching their agent silently
+     * fail to appear with no way to find out whether the arena refused it, its
+     * token was wrong, or it flooded the socket.
      */
-    seeking: boolean('seeking').notNull().default(true),
+    lastCloseReason: text('last_close_reason'),
     /**
      * The ERC-8004 identity minted for this agent, as a decimal string.
      *
@@ -105,8 +114,6 @@ export const agents = pgTable(
     ratingSigma: real('rating_sigma').notNull().default(25 / 3),
     /** Matches finished. What the rating's confidence is really counting. */
     matchesPlayed: integer('matches_played').notNull().default(0),
-    /** Free-form strategy written by the owner. Treated as untrusted input. */
-    instructions: text('instructions').notNull().default(''),
     handsPlayed: integer('hands_played').notNull().default(0),
     handsWon: integer('hands_won').notNull().default(0),
     /** Net chips won across every hand. Negative is a losing agent. */
@@ -115,7 +122,14 @@ export const agents = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex('agents_user_idx').on(table.userId)],
+  (table) => [
+    // Not unique any more. An owner may run several agents, because a team
+    // testing three strategies should not have to be three people. What stops
+    // that becoming collusion is the matchmaker, which refuses to seat two
+    // agents of one owner at the same table.
+    index('agents_user_idx').on(table.userId),
+    uniqueIndex('agents_token_idx').on(table.tokenHash),
+  ],
 );
 
 /** Chips the operator issued against a deposit that has not landed yet. */
@@ -413,69 +427,8 @@ export const results = pgTable(
   ],
 );
 
-/**
- * What one agent has decided to remember about another. This is the whole
- * memory system: no statistics are computed for an agent and no hand history is
- * replayed to it, so anything it knows about an opponent it noticed and wrote
- * down itself. What it chooses to keep is therefore part of what is being
- * measured, not scaffolding around it.
- *
- * The note an agent reads is the current one. Every version it ever held is
- * kept next door, because watching a read form and then break is the most
- * legible evidence of adaptation the arena produces.
- */
-export const agentNotes = pgTable(
-  'agent_notes',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    authorId: uuid('author_id')
-      .notNull()
-      .references(() => agents.id, { onDelete: 'cascade' }),
-    subjectId: uuid('subject_id')
-      .notNull()
-      .references(() => agents.id, { onDelete: 'cascade' }),
-    /**
-     * Notes belong to one match and are never read outside it.
-     *
-     * Every agent sits down knowing nobody and builds its reads over the hands
-     * it is about to play. The rows survive afterwards for owners to review and
-     * for the record, but no later prompt ever loads them: an owner who rewrites
-     * an agent between matches should not be facing opponents who remember the
-     * version it used to be.
-     */
-    matchId: uuid('match_id')
-      .notNull()
-      .references(() => matches.id, { onDelete: 'cascade' }),
-    text: text('text').notNull(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [uniqueIndex('agent_notes_pair_idx').on(table.matchId, table.authorId, table.subjectId)],
-);
-
-/** Append-only history of `agentNotes`. Never read by an agent, only by people. */
-export const agentNoteRevisions = pgTable(
-  'agent_note_revisions',
-  {
-    id: bigserial('id', { mode: 'number' }).primaryKey(),
-    authorId: uuid('author_id')
-      .notNull()
-      .references(() => agents.id, { onDelete: 'cascade' }),
-    subjectId: uuid('subject_id')
-      .notNull()
-      .references(() => agents.id, { onDelete: 'cascade' }),
-    matchId: uuid('match_id')
-      .notNull()
-      .references(() => matches.id, { onDelete: 'cascade' }),
-    text: text('text').notNull(),
-    /** The hand that prompted the rewrite. Null once that hand is pruned. */
-    handId: uuid('hand_id').references(() => hands.id, { onDelete: 'set null' }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [index('agent_note_revisions_pair_idx').on(table.matchId, table.authorId, table.subjectId, table.id)],
-);
-
-export const usersRelations = relations(users, ({ one, many }) => ({
-  agent: one(agents, { fields: [users.id], references: [agents.userId] }),
+export const usersRelations = relations(users, ({ many }) => ({
+  agents: many(agents),
   ledger: many(ledgerEntries),
 }));
 

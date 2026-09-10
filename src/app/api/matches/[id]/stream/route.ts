@@ -29,7 +29,14 @@ export async function GET(request: Request, context: RouteContext<'/api/matches/
   }
 
   const session = await getSession();
-  const viewerAgentId = session ? await account(session).then((row) => row.agent.id).catch(() => null) : null;
+  // Whichever of the viewer's agents is in this match, if any. One owner can
+  // hold at most one seat per match, because the matchmaker refuses to seat two
+  // of theirs together, so there is never a choice to make here.
+  const viewerAgentId = session
+    ? await account(session)
+        .then((row) => row.agents.find((agent) => agent.seat?.matchId === id)?.id ?? null)
+        .catch(() => null)
+    : null;
 
   const encoder = new TextEncoder();
 

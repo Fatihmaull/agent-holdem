@@ -20,6 +20,13 @@ export async function GET(): Promise<Response> {
   const session = await getSession();
   const mine = session ? await account(session).catch(() => null) : null;
 
+  // One owner can hold at most one seat in any match, so a set of their agent
+  // ids is enough to answer "is that me" without picking between them.
+  const myAgentIds = new Set((mine?.agents ?? []).map((agent) => agent.id));
+  const myMatchIds = new Set(
+    (mine?.agents ?? []).flatMap((agent) => (agent.seat ? [agent.seat.matchId] : [])),
+  );
+
   const stored = await storedMatches();
   // Read what each runtime already knows. Forcing a refresh here would publish
   // a snapshot into every spectator's feed on each poll.
@@ -27,7 +34,7 @@ export async function GET(): Promise<Response> {
 
   const matches = stored.map((row) => {
     const runtime = live.get(row.matchId);
-    const view = runtime?.view(mine?.agent.id ?? null) ?? null;
+    const view = runtime?.view(mine?.agents.find((agent) => agent.seat?.matchId === row.matchId)?.id ?? null) ?? null;
 
     const seats = view?.seats.length
       ? view.seats.map((seat) => ({
@@ -36,7 +43,7 @@ export async function GET(): Promise<Response> {
           color: seat.color,
           stack: seat.stack,
           busted: seat.status === 'empty' && seat.name !== null,
-          isMine: seat.agentId !== null && seat.agentId === mine?.agent.id,
+          isMine: seat.agentId !== null && myAgentIds.has(seat.agentId),
         }))
       : Array.from({ length: row.seatCount }, (_, index) => {
           const seat = row.seats.find((entry) => entry.index === index);
@@ -46,7 +53,7 @@ export async function GET(): Promise<Response> {
             color: seat?.color ?? null,
             stack: seat?.stack ?? 0,
             busted: seat?.busted ?? false,
-            isMine: seat !== undefined && seat.agentId === mine?.agent.id,
+            isMine: seat !== undefined && seat.agentId !== null && myAgentIds.has(seat.agentId),
           };
         });
 
@@ -72,9 +79,11 @@ export async function GET(): Promise<Response> {
 
   return Response.json({
     matches,
-    // Where the viewer's own agent is, so the interface can point at it rather
-    // than making them find their own name in a list.
-    seatedAt: mine?.seat?.matchId ?? null,
-    playing: mine?.playing ?? false,
+    // Which matches the viewer has an agent in, so the interface can point at
+    // them rather than making somebody find their own name in a list.
+    mine: [...myMatchIds],
+    // Whether any of their agents is connected and asking for a game, which is
+    // what the empty state needs to know to say something useful.
+    queued: (mine?.agents ?? []).some((agent) => agent.ready),
   });
 }

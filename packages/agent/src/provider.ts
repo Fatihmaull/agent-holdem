@@ -1,10 +1,13 @@
 /**
- * Model access sits behind one small interface so the provider can change
- * without the poker code noticing. Development runs on a free tier; anything
- * user-facing runs on a paid key.
+ * Model access, behind one small interface so the provider can change without
+ * the rest of the agent noticing.
+ *
+ * This lives in the agent rather than in the arena because paying for thinking
+ * is an agent's problem. The arena never holds a model key and never makes a
+ * model call, which is what stops its running costs scaling with the number of
+ * people playing.
  */
 
-import { NOTE_SYSTEM_PROMPT } from './prompt';
 
 export interface ModelRequest {
   system: string;
@@ -129,111 +132,8 @@ export class ScriptedProvider implements ModelProvider {
  * ignores the owner's instructions entirely. That is the point: it exercises
  * the loop without pretending to be an agent with a personality.
  */
-class HeuristicProvider implements ModelProvider {
-  readonly name = 'heuristic';
-
-  async *stream(request: ModelRequest, _apiKey: string, signal: AbortSignal): AsyncIterable<string> {
-    // One method serves two prompts, so the system prompt is what says which
-    // question was asked. Without this branch the loop still deals hands, but
-    // notes are never written, which leaves a whole subsystem untested by a run
-    // that looks fine.
-    if (request.system === NOTE_SYSTEM_PROMPT) {
-      yield* this.emit(notesFrom(request.user), signal);
-      return;
-    }
-    const prompt = request.user;
-    const equity = Number(/equity: ([\d.]+)%/.exec(prompt)?.[1] ?? '50') / 100;
-    const call = Number(/- call (\d+)/.exec(prompt)?.[1] ?? 'NaN');
-    const raise = /- raise, "to" between (\d+) and (\d+)/.exec(prompt);
-    const bet = /- bet, "to" between (\d+) and (\d+)/.exec(prompt);
-    const breakEven = Number(/needs ([\d.]+)% to break even/.exec(prompt)?.[1] ?? '0') / 100;
-    const canCheck = /^- check$/m.test(prompt);
-
-    const strong = equity > 0.66;
-    const playable = equity > breakEven + 0.04;
-
-    let reply: { action: string; to?: number; remember?: boolean };
-    let reasoning: string;
-
-    if (strong && (raise || bet)) {
-      const range = raise ?? bet!;
-      const min = Number(range[1]);
-      const max = Number(range[2]);
-      const to = Math.min(max, Math.round(min * 1.6));
-      reply = { action: raise ? 'raise' : 'bet', to };
-      reasoning = `Ahead of the range here at ${(equity * 100).toFixed(0)}%, so this is a spot to build the pot.`;
-    } else if (Number.isFinite(call) && playable) {
-      reply = { action: 'call' };
-      reasoning = `Priced in: ${(equity * 100).toFixed(0)}% against a break-even of ${(breakEven * 100).toFixed(0)}%.`;
-    } else if (canCheck) {
-      reply = { action: 'check' };
-      reasoning = 'Nothing worth building yet. Taking the free card.';
-    } else {
-      reply = { action: 'fold' };
-      reasoning = `Not enough equity to pay for this one at ${(equity * 100).toFixed(0)}%.`;
-    }
-
-    // Folding to a bet is the spot a real agent most often wants to look back
-    // at, and it is frequent enough that a short development run actually
-    // exercises the note-writing path instead of leaving it dark.
-    if (reply.action === 'fold') reply.remember = true;
-
-    yield* this.emit(`${reasoning} ${JSON.stringify(reply)}`, signal);
-  }
-
-  /** Word at a time, so the streaming path is exercised rather than bypassed. */
-  private async *emit(text: string, signal: AbortSignal): AsyncIterable<string> {
-    for (const word of text.split(/(?<=\s)/)) {
-      if (signal.aborted) throw new ProviderError('aborted');
-      await new Promise((resolve) => setTimeout(resolve, 45));
-      yield word;
-    }
-  }
-}
-
-/**
- * A note per opponent, counting what they did in the hand just played.
- *
- * Deliberately mechanical. The point is to move a real note through the write,
- * the revision count and the read-back, not to imitate a read: a note that says
- * the same thing every hand would never revise, and revising is the half of the
- * feature most likely to be broken.
- */
-function notesFrom(prompt: string): string {
-  const section = prompt.split('YOUR CURRENT NOTES')[1]?.split('\n\n')[0] ?? '';
-  const hand = prompt.split('HAND')[1]?.split('\n\n')[0] ?? '';
-
-  const notes: Record<string, string> = {};
-  for (const line of section.split('\n')) {
-    const name = /^- (.+?): /.exec(line)?.[1];
-    if (!name) continue;
-
-    const beats = hand.split('\n').filter((beat) => beat.includes(name));
-    const aggressive = beats.filter((beat) => /\b(bets?|raises?)\b/i.test(beat)).length;
-    const folded = beats.some((beat) => /\bfolds?\b/i.test(beat));
-
-    notes[name] = folded && aggressive === 0
-      ? 'Folded without putting money in. Nothing shown yet.'
-      : `Put in ${aggressive} bet or raise this hand. Reweight when that stops holding.`;
-  }
-
-  return JSON.stringify(notes);
-}
-
-
-export function createProvider(): ModelProvider {
-  const name = process.env.AGENT_PROVIDER ?? 'gemini';
-  switch (name) {
-    case 'gemini':
-      return new GeminiProvider(process.env.GEMINI_MODEL ?? 'gemini-3-flash');
-    case 'heuristic':
-      if (process.env.NODE_ENV === 'production') {
-        throw new ProviderError('the heuristic provider is for development only');
-      }
-      return new HeuristicProvider();
-    default:
-      throw new ProviderError(`unknown AGENT_PROVIDER: ${name}`);
-  }
+export function createProvider(model = process.env.GEMINI_MODEL ?? 'gemini-3-flash'): ModelProvider {
+  return new GeminiProvider(model);
 }
 
 async function* readServerSentEvents(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncIterable<string> {

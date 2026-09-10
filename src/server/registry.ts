@@ -1,5 +1,3 @@
-import { createProvider, type ModelProvider } from '../agent/provider';
-import { modelQueue, type ModelQueue } from '../agent/queue';
 import type { MatchConfig } from '../lib/economy';
 import { MatchRuntime } from './table';
 import type { MatchEnding } from './store';
@@ -11,25 +9,12 @@ import type { MatchEnding } from './store';
  * then it is gone: matches are ephemeral by design, so this map turns over
  * constantly rather than holding a fixed roster.
  *
- * `next dev` reloads modules, so both the map and the model plumbing hang off
- * globalThis. A hot reload that built a second registry would deal every open
- * match twice.
+ * Hangs off globalThis because a hot reload that built a second registry would
+ * deal every open match twice.
  */
 const globalForMatches = globalThis as unknown as {
   __agentholdemMatches?: Map<string, MatchRuntime>;
-  __agentholdemEngine?: { provider: ModelProvider; queue: ModelQueue };
 };
-
-/**
- * One provider and one queue for every match. The queue is what holds the rate
- * limit, so a second one would hand out the same allowance twice.
- */
-function engineParts(): { provider: ModelProvider; queue: ModelQueue } {
-  if (!globalForMatches.__agentholdemEngine) {
-    globalForMatches.__agentholdemEngine = { provider: createProvider(), queue: modelQueue() };
-  }
-  return globalForMatches.__agentholdemEngine;
-}
 
 function registry(): Map<string, MatchRuntime> {
   if (!globalForMatches.__agentholdemMatches) globalForMatches.__agentholdemMatches = new Map();
@@ -59,8 +44,7 @@ export function openMatch(
   const open = registry().get(matchId);
   if (open) return open;
 
-  const { provider, queue } = engineParts();
-  const runtime = new MatchRuntime(matchId, config, provider, queue, onFinished);
+  const runtime = new MatchRuntime(matchId, config, onFinished);
   registry().set(matchId, runtime);
   runtime.start();
   return runtime;

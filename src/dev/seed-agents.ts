@@ -1,48 +1,58 @@
 import 'dotenv/config';
 import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { db, sql } from '../db/client';
-import { agents, ledgerEntries, users } from '../db/schema';
-import { OPPONENT_COLORS } from '../agent/colors';
+import { ledgerEntries, users } from '../db/schema';
+import { registerAgent } from '../server/credentials';
 import { STARTING_GRANT } from '../lib/economy';
 
 /**
- * Creates throwaway agents so the arena has a field to match during development.
+ * Creates accounts and agents, and writes the field file that runs them.
  *
- * It does not seat anybody. Nothing seats anybody any more: these agents queue
- * like everyone else and the matchmaker puts them into a game, which means a
- * seeded run exercises exactly the path a real one does. They refuse to be
- * created against a production database.
+ * One account per agent, on purpose. The matchmaker refuses to seat two agents
+ * with the same owner at one table, because an owner who sees both sets of hole
+ * cards can have one fold every pot the other contests until the chips are
+ * wherever they want them. So a field sharing an account could never form a
+ * match at all.
+ *
+ * The arithmetic that follows from that: N accounts can put at most N agents in
+ * one match, so running N+1 agents leaves one permanently free. A stranger who
+ * connects is then seated against the spare within seconds rather than waiting
+ * out somebody else's match, which at a hundred hands is over an hour.
+ *
+ * Addresses here are random rather than real wallets, which is why this refuses
+ * to run against production: nobody can ever sign in to these accounts.
  */
 
 const CHARACTERS = [
   {
     name: 'Viridian',
-    instructions:
+    strategy:
       'Play tight and punish. Fold anything weak before the flop. When you do enter a pot, bet three quarters of it on every street and do not slow down for one raise.',
   },
   {
     name: 'Cinnabar',
-    instructions:
+    strategy:
       'Apply pressure constantly. Raise from late position with almost anything. Bluff the river whenever the board missed and your opponent has shown no strength.',
   },
   {
     name: 'Cerulean',
-    instructions:
+    strategy:
       'Follow the maths and nothing else. Call only when the price is below your equity. Never bluff. Never fold a hand that is getting the right price.',
   },
   {
     name: 'Marigold',
-    instructions:
+    strategy:
       'Trap. Check strong hands to let opponents bet into you, then raise the turn. Bet small with medium hands to keep weak ones in.',
   },
   {
     name: 'Amethyst',
-    instructions:
+    strategy:
       'Be unreadable. Vary your sizing at random. Occasionally shove with nothing. Fold hands you would normally play about one time in four.',
   },
   {
     name: 'Umber',
-    instructions:
+    strategy:
       'Survive first. Never risk more than a third of your stack in one hand unless you hold two pair or better. Fold to any all-in without the nuts.',
   },
 ];
@@ -53,27 +63,15 @@ async function main(): Promise<void> {
   }
 
   const wanted = Math.min(Number(process.argv[2] ?? CHARACTERS.length), CHARACTERS.length);
+  const modelSeats = Number(process.env.SEED_MODEL_AGENTS ?? 0);
+  const out = process.argv[3] ?? 'field.json';
 
-  const existing = await db.select({ name: agents.name, color: agents.color }).from(agents);
-  const takenNames = new Set(existing.map((row) => row.name));
-  const takenColors = new Set(existing.map((row) => row.color));
+  const field: Array<{ token: string; brain: 'model' | 'heuristic'; strategy?: string; name: string }> = [];
 
-  let made = 0;
-
-  for (const character of CHARACTERS) {
-    if (made >= wanted) break;
-
-    const name = `${character.name} (dev)`;
-    if (takenNames.has(name)) continue;
-    takenNames.add(name);
-
-    const color = OPPONENT_COLORS.find((entry) => !takenColors.has(entry.id));
-    if (!color) break;
-    takenColors.add(color.id);
-
+  for (const [index, character] of CHARACTERS.slice(0, wanted).entries()) {
     const address = `0x${randomBytes(20).toString('hex')}`;
 
-    await db.transaction(async (tx) => {
+    const userId = await db.transaction(async (tx) => {
       const [user] = await tx
         .insert(users)
         .values({ address, chips: STARTING_GRANT })
@@ -87,23 +85,24 @@ async function main(): Promise<void> {
         reference: 'dev-seed',
       });
 
-      await tx.insert(agents).values({
-        userId: user.id,
-        name,
-        color: color.id,
-        instructions: character.instructions,
-        // Alternating, so a seeded field carries both arms of the notes
-        // experiment rather than being all one and proving nothing.
-        notesEnabled: made % 2 === 0,
-      });
+      return user.id;
     });
 
-    console.log(`created ${name}`);
-    made += 1;
+    const name = `${character.name} (dev)`;
+    const { token } = await registerAgent(userId, name);
+
+    const brain = index < modelSeats ? 'model' : 'heuristic';
+    field.push(brain === 'model' ? { name, token, brain, strategy: character.strategy } : { name, token, brain });
+
+    console.log(`created ${name} (${brain})`);
   }
 
+  writeFileSync(out, `${JSON.stringify(field, null, 2)}\n`);
   await sql.end();
-  console.log(`\n${made} agent(s) queued. The matchmaker opens a match as soon as two are waiting.`);
+
+  console.log(`\nwrote ${field.length} agents to ${out}`);
+  console.log('run them with:');
+  console.log(`  AGENT_FIELD=${out} pnpm --filter @agentholdem/agent field`);
 }
 
 main().catch((error) => {

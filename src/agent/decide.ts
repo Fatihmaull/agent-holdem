@@ -1,58 +1,66 @@
+import type { ActFrame, DecisionFrame, OpponentSeat, Street } from '@agentholdem/protocol';
 import type { Action, HandState, LegalActions } from '../poker/engine';
 import { legalActions, totalPot } from '../poker/engine';
+import { cardName } from '../poker/cards';
 import { type Equity, type HandRead, equityVsRandom, readHand } from '../poker/equity';
-import {
-  type AgentDecision,
-  type DecisionOutcome,
-  MAX_NOTE,
-  type NoteUpdate,
-  defaultAction,
-  extractJson,
-  validateDecision,
-  validateNotes,
-} from './decision';
-import {
-  type DecisionContext,
-  NOTE_SYSTEM_PROMPT,
-  type NoteSubject,
-  type OpponentView,
-  SYSTEM_PROMPT,
-  buildNotePrompt,
-  buildPrompt,
-} from './prompt';
-import type { ModelProvider } from './provider';
-import type { ModelQueue } from './queue';
+import { type AgentDecision, type DecisionOutcome, defaultAction, validateDecision } from './decision';
 
-export interface AgentIdentity {
-  id: string;
-  name: string;
-  instructions: string;
+/**
+ * One seat's turn.
+ *
+ * The arena settles three things before it asks anybody anything: what the hand
+ * actually is, what it is worth, and which moves are legal. The agent chooses
+ * among legal moves and explains itself. It never computes the equity that gets
+ * published and it never decides what is allowed.
+ *
+ * Nothing here trusts the far end. An answer that is late, malformed, outside
+ * the legal set, or absent because the socket died all arrive at the same
+ * place: the seat checks when checking is free and folds when it is not, and
+ * that is recorded as a timeout or an error rather than as a fold. An agent
+ * that walked away is not the same as an agent that decided to give up, and the
+ * record should not claim otherwise.
+ */
+
+/** The narrow slice of a connection this needs. Anything that can answer will do. */
+export interface Askable {
+  ask(
+    frame: ActFrame,
+    onReasoning: (text: string) => void,
+    signal: AbortSignal,
+  ): Promise<DecisionFrame | null>;
 }
 
 export interface DecideOptions {
-  agent: AgentIdentity;
+  /** The open connection to this agent, or null when it is not here. */
+  link: Askable | null;
   state: HandState;
   seatIndex: number;
   bigBlind: number;
   /** Hard ceiling on the act clock. Expiry checks or folds. */
   clockMs: number;
+  matchId: string;
+  handNumber: number;
+  /**
+   * The chair each engine position is sitting in.
+   *
+   * The engine numbers the players in a hand densely from zero and renumbers
+   * them as agents bust out. An agent needs a number that means the same thing
+   * all match, so everything that crosses the wire is a chair and this is the
+   * only place the two are reconciled.
+   */
+  chairs: readonly number[];
   /**
    * Display name for each agent id at the table. Opponents read as the names
    * their owners gave them; without this they arrive as bare identifiers, which
-   * tells the model nothing and reads as a leak of internals.
+   * tells an agent nothing and leaks internals.
    */
   opponentNames?: ReadonlyMap<string, string>;
-  /**
-   * What this agent has written about the agents it is sitting with, by agent
-   * id. Absent for the control arm, which plays remembering nobody.
-   */
-  notes?: ReadonlyMap<string, string>;
-  provider: ModelProvider;
-  queue: ModelQueue;
+  /** How long each chair's last decision took, which is public at a real table. */
+  opponentTiming?: ReadonlyMap<number, number>;
   equitySamples?: number;
   /** Called as reasoning arrives, so the Brain Visualizer can show it streaming. */
   onToken?: (text: string) => void;
-  /** Called once the simulation finishes, before the model is asked anything. */
+  /** Called once the simulation finishes, before the agent is asked anything. */
   onEquity?: (equity: Equity, read: HandRead) => void;
   signal?: AbortSignal;
 }
@@ -62,25 +70,18 @@ export interface DecisionRecord extends AgentDecision {
   read: HandRead;
   outcome: DecisionOutcome;
   elapsedMs: number;
-  /** Whether a model was consulted at all. */
-  source: 'rules' | 'model';
-  /** Set when the outcome is not `decided`, for the terminal half to report. */
+  /** Whether the arena decided this itself or an agent did. */
+  source: 'rules' | 'agent';
+  /** Plain statement of what went wrong, or null when nothing did. */
   failure: string | null;
 }
-
-/**
- * Room for the reply. Two sentences and a small JSON object need very little,
- * but a model that thinks before answering spends this budget on the thinking
- * too, and one that runs out returns nothing at all.
- */
-const MAX_OUTPUT_TOKENS = Number(process.env.AGENT_MAX_OUTPUT_TOKENS ?? 2048);
 
 const POSITIONS_BY_SEATS: Record<number, string[]> = {
   2: ['button', 'big blind'],
   3: ['button', 'small blind', 'big blind'],
   4: ['button', 'small blind', 'big blind', 'cutoff'],
-  5: ['button', 'small blind', 'big blind', 'under the gun', 'cutoff'],
-  6: ['button', 'small blind', 'big blind', 'under the gun', 'hijack', 'cutoff'],
+  5: ['button', 'small blind', 'big blind', 'middle', 'cutoff'],
+  6: ['button', 'small blind', 'big blind', 'under the gun', 'middle', 'cutoff'],
 };
 
 export function positionName(state: HandState, seatIndex: number): string {
@@ -90,16 +91,9 @@ export function positionName(state: HandState, seatIndex: number): string {
   return names[offset] ?? `seat ${seatIndex + 1}`;
 }
 
-/**
- * Produces one action for one seat.
- *
- * Three things are settled before a model is involved: what the hand actually
- * is, what it is worth, and which moves are legal. The model chooses among
- * legal moves and explains itself. It never computes the equity and it never
- * decides what is allowed.
- */
 export async function decide(options: DecideOptions): Promise<DecisionRecord> {
-  const { agent, state, seatIndex, clockMs, provider, queue } = options;
+  const { state, seatIndex, clockMs, link, chairs } = options;
+  const chairOf = (position: number) => chairs[position] ?? position;
   const started = Date.now();
   const seat = state.seats[seatIndex];
   const legal = legalActions(state);
@@ -131,60 +125,9 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
     };
   }
 
-  const context: DecisionContext = {
-    agentName: agent.name,
-    instructions: agent.instructions,
-    street: state.street,
-    hole: seat.hole,
-    board: state.board,
-    stack: seat.stack,
-    potSize: totalPot(state),
-    legal,
-    bigBlind: options.bigBlind,
-    position: positionName(state, seatIndex),
-    opponents: describeOpponents(state, seatIndex, options.opponentNames ?? new Map(), options.notes ?? new Map()),
-    equity,
-    read,
-    clockSeconds: Math.round(clockMs / 1000),
-  };
-
-  const clock = new AbortController();
-  const timer = setTimeout(() => clock.abort(new ClockExpired()), clockMs);
-  const signal = options.signal ? AbortSignal.any([options.signal, clock.signal]) : clock.signal;
-
-  let streamed = '';
-  try {
-    streamed = await queue.run(async (apiKey) => {
-      let text = '';
-      for await (const chunk of provider.stream(
-        { system: SYSTEM_PROMPT, user: buildPrompt(context), maxOutputTokens: MAX_OUTPUT_TOKENS, temperature: 0.9 },
-        apiKey,
-        signal,
-      )) {
-        text += chunk;
-        options.onToken?.(chunk);
-      }
-      return text;
-    }, signal);
-  } catch (error) {
-    clearTimeout(timer);
-    const timedOut = clock.signal.aborted;
-    return {
-      action: defaultAction(legal),
-      reasoning: '',
-      say: null,
-      equity,
-      read,
-      outcome: timedOut ? 'timeout' : 'error',
-      elapsedMs: Date.now() - started,
-      source: 'model',
-      failure: timedOut ? 'ran out of time' : describeError(error),
-    };
-  }
-  clearTimeout(timer);
-
-  const decision = validateDecision(withProseReasoning(streamed), legal);
-  if (!decision) {
+  // No socket means the agent left. It still has chips and a seat, because a
+  // match cannot be walked out of, so it plays out as a seat that never acts.
+  if (!link) {
     return {
       action: defaultAction(legal),
       reasoning: '',
@@ -193,8 +136,92 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
       read,
       outcome: 'error',
       elapsedMs: Date.now() - started,
-      source: 'model',
-      failure: 'returned no usable action',
+      source: 'agent',
+      failure: 'not connected',
+    };
+  }
+
+  const frame: ActFrame = {
+    type: 'act',
+    id: `${options.matchId}:${options.handNumber}:${seatIndex}:${state.events.length}`,
+    matchId: options.matchId,
+    handNumber: options.handNumber,
+    street: state.street as Street,
+    seat: chairOf(seatIndex),
+    button: chairOf(state.button),
+    position: positionName(state, seatIndex),
+    hole: [cardName(seat.hole[0]), cardName(seat.hole[1])],
+    board: state.board.map(cardName),
+    stack: seat.stack,
+    committed: seat.committed,
+    potSize: totalPot(state),
+    legal,
+    equity,
+    read: {
+      made: read.made,
+      flushDraw: read.flushDraw,
+      openEnded: read.openEnded,
+      gutshot: read.gutshot,
+      overcards: read.overcards,
+    },
+    opponents: describeOpponents(
+      state,
+      seatIndex,
+      chairOf,
+      options.opponentNames ?? new Map(),
+      options.opponentTiming ?? new Map(),
+    ),
+    remainingMs: clockMs,
+  };
+
+  const clock = new AbortController();
+  const timer = setTimeout(() => clock.abort(), clockMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, clock.signal]) : clock.signal;
+
+  let reasoning = '';
+  let reply: DecisionFrame | null;
+  try {
+    reply = await link.ask(
+      frame,
+      (text) => {
+        reasoning += text;
+        options.onToken?.(text);
+      },
+      signal,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!reply) {
+    const timedOut = clock.signal.aborted;
+    return {
+      action: defaultAction(legal),
+      reasoning,
+      say: null,
+      equity,
+      read,
+      outcome: timedOut ? 'timeout' : 'error',
+      elapsedMs: Date.now() - started,
+      source: 'agent',
+      failure: timedOut ? 'ran out of time' : 'sent no usable answer',
+    };
+  }
+
+  // Reasoning arrives as a stream and the decision arrives as a frame, so the
+  // two are stitched here rather than expecting an agent to repeat itself.
+  const decision = validateDecision({ ...reply, reasoning }, legal);
+  if (!decision) {
+    return {
+      action: defaultAction(legal),
+      reasoning,
+      say: null,
+      equity,
+      read,
+      outcome: 'error',
+      elapsedMs: Date.now() - started,
+      source: 'agent',
+      failure: `asked for ${reply.action}, which is not legal here`,
     };
   }
 
@@ -204,82 +231,10 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
     read,
     outcome: 'decided',
     elapsedMs: Date.now() - started,
-    source: 'model',
+    source: 'agent',
     failure: null,
   };
 }
-
-export interface ReviseNotesOptions {
-  agent: AgentIdentity;
-  /** The hand as it played out, one line per beat, in order. */
-  hand: string[];
-  opponents: NoteSubject[];
-  clockMs: number;
-  provider: ModelProvider;
-  queue: ModelQueue;
-  signal?: AbortSignal;
-}
-
-/**
- * The second request of a hand the agent asked to remember, made once the hand
- * is over and the cards that were shown are known.
- *
- * A failure here is silent by design. The agent keeps the notes it already had,
- * which is the same position it would be in having written nothing, so a
- * provider hiccup costs a memory rather than a hand.
- */
-export async function reviseNotes(options: ReviseNotesOptions): Promise<{
-  updates: NoteUpdate[];
-  failure: string | null;
-}> {
-  const { agent, provider, queue } = options;
-  if (options.opponents.length === 0) return { updates: [], failure: null };
-
-  const clock = new AbortController();
-  const timer = setTimeout(() => clock.abort(new ClockExpired()), options.clockMs);
-  const signal = options.signal ? AbortSignal.any([options.signal, clock.signal]) : clock.signal;
-
-  try {
-    const text = await queue.run(async (apiKey) => {
-      let reply = '';
-      for await (const chunk of provider.stream(
-        {
-          system: NOTE_SYSTEM_PROMPT,
-          user: buildNotePrompt({
-            agentName: agent.name,
-            instructions: agent.instructions,
-            hand: options.hand,
-            opponents: options.opponents,
-            maxNote: MAX_NOTE,
-          }),
-          maxOutputTokens: MAX_OUTPUT_TOKENS,
-          // Lower than the table, deliberately. A note is a record of what
-          // happened, and creativity in it is just an unreliable memory.
-          temperature: 0.4,
-        },
-        apiKey,
-        signal,
-      )) {
-        reply += chunk;
-      }
-      return reply;
-    }, signal);
-
-    return {
-      updates: validateNotes(extractJson(text), options.opponents.map((opponent) => opponent.name)),
-      failure: null,
-    };
-  } catch (error) {
-    return {
-      updates: [],
-      failure: clock.signal.aborted ? 'ran out of time' : describeError(error),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-class ClockExpired extends Error {}
 
 /**
  * Guards for spots where no judgement is involved: a move with no alternative,
@@ -287,8 +242,8 @@ class ClockExpired extends Error {}
  *
  * Both are rare in practice. Hold'em almost always leaves at least two options,
  * and a hand with literally zero equity against a random holding is close to
- * unreachable, so this is a correctness guard rather than a way to save
- * requests. Rate pressure is handled by the queue and the act clock instead.
+ * unreachable, so this is a correctness guard rather than a way to save round
+ * trips.
  */
 function forcedMove(legal: LegalActions, equity: Equity): AgentDecision | null {
   const options: Action[] = [];
@@ -320,9 +275,10 @@ function sampleCount(boardSize: number): number {
 function describeOpponents(
   state: HandState,
   seatIndex: number,
+  chairOf: (position: number) => number,
   names: ReadonlyMap<string, string>,
-  notes: ReadonlyMap<string, string>,
-): OpponentView[] {
+  timing: ReadonlyMap<number, number>,
+): OpponentSeat[] {
   const lastAction = new Map<number, { action: string; to: number }>();
   for (const event of state.events) {
     if (event.type === 'action') lastAction.set(event.seat, { action: event.action, to: event.to });
@@ -331,35 +287,14 @@ function describeOpponents(
   return state.seats
     .filter((seat) => seat.index !== seatIndex && !seat.sittingOut)
     .map((seat) => ({
+      seat: chairOf(seat.index),
       name: names.get(seat.agentId) ?? seat.agentId,
       stack: seat.stack,
       committed: seat.committed,
       status: seat.folded ? 'folded' : seat.allIn ? 'all-in' : 'in',
       lastAction: lastAction.get(seat.index)?.action ?? null,
-      note: notes.get(seat.agentId) ?? null,
-      // Timing is filled in by the runtime, which is the only layer that knows
-      // how long a seat actually took. Opponents see the duration, never the cause.
-      lastActionMs: null,
+      // How long a seat took is public at a real table. Why it took that long
+      // is not, and never travels.
+      lastActionMs: timing.get(chairOf(seat.index)) ?? null,
     }));
-}
-
-/**
- * The model writes reasoning as prose and then a JSON object. Everything before
- * the object is the reasoning, unless the object carried its own.
- */
-function withProseReasoning(text: string): unknown {
-  const parsed = extractJson(text);
-  if (typeof parsed !== 'object' || parsed === null) return parsed;
-
-  const record = parsed as Record<string, unknown>;
-  if (typeof record.reasoning === 'string' && record.reasoning.trim()) return record;
-
-  const braceAt = text.indexOf('{');
-  const prose = (braceAt >= 0 ? text.slice(0, braceAt) : text).replace(/```(?:json)?/g, '').trim();
-  return { ...record, reasoning: prose };
-}
-
-function describeError(error: unknown): string {
-  if (error instanceof Error) return error.message.slice(0, 120);
-  return 'provider failed';
 }

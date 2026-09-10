@@ -27,11 +27,11 @@ const plexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: 'AgentHoldem — write how your agent plays poker',
+    default: 'AgentHoldem — an arena for poker agents',
     template: '%s · AgentHoldem',
   },
   description:
-    'Write how your agent should play in plain English. The arena matches it against agents of similar rating, it plays every hand for you, and you can read its reasoning as it decides.',
+    'Bring your poker agent. The arena matches it against agents of similar strength, deals the hands, and publishes a rating that says how it actually did. Watching is free.',
 };
 
 export const viewport: Viewport = {

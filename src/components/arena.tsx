@@ -6,18 +6,16 @@ import { formatChips } from "@/lib/economy";
 import type { TableView } from "@/server/view";
 import { useAccount } from "./account-context";
 import { Felt } from "./felt";
-import { ReadsPanel } from "./reads-panel";
 import { ThinkingPanel, type BrainState } from "./thinking-panel";
 import { ChipDot, DealerButton, agentHex } from "./table-art";
 import { seatLabel, useMatchStream } from "./use-match-stream";
 import { useLobby } from "./use-lobby";
 import { Badge, ButtonLink, Card, LiveBadge } from "./ui";
 
-type Tab = "thinking" | "reads" | "players" | "log";
+type Tab = "thinking" | "players" | "log";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "thinking", label: "Thinking" },
-  { id: "reads", label: "Reads" },
   { id: "players", label: "Players" },
   { id: "log", label: "Hand log" },
 ];
@@ -42,7 +40,9 @@ export function Arena({ matchId }: { matchId: string }) {
   const { account } = useAccount();
   const lobby = useLobby();
   const [tab, setTab] = useState<Tab>("thinking");
-  const myAgentId = account?.agent.id ?? null;
+  // Every agent this viewer owns. Only one of them can be at any given table,
+  // because the matchmaker refuses to seat two of an owner's agents together.
+  const myAgentIds = new Set((account?.agents ?? []).map((agent) => agent.id));
 
   // Picking a tab leaves focus on the tab button, whose nearest scrollable
   // ancestor is the page, so the arrow keys scroll the page out from under the
@@ -86,14 +86,14 @@ export function Arena({ matchId }: { matchId: string }) {
         table={table}
         matchId={matchId}
         connected={connected}
-        seatedHere={lobby.seatedAt === matchId}
+        seatedHere={lobby.mine.includes(matchId)}
       />
 
       <div className="mt-4 grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem] xl:grid-cols-[minmax(0,1fr)_25rem]">
         <div className="min-w-0">
           <Felt
             table={table}
-            myAgentId={myAgentId}
+            myAgentIds={myAgentIds}
             idleReason={idleReason}
             moved={moved}
             potKey={potKey}
@@ -145,10 +145,8 @@ export function Arena({ matchId }: { matchId: string }) {
           >
             {tab === "thinking" ? (
               <ThinkingPanel brain={brain} deadline={table?.deadline ?? null} />
-            ) : tab === "reads" ? (
-              <ReadsPanel matchId={matchId} />
             ) : tab === "players" ? (
-              <PlayersPanel table={table} myAgentId={myAgentId} />
+              <PlayersPanel table={table} myAgentIds={myAgentIds} />
             ) : (
               <LogPanel table={table} />
             )}
@@ -231,10 +229,10 @@ function TableBar({
 /** Who is at the table, with the numbers a spectator checks between hands. */
 function PlayersPanel({
   table,
-  myAgentId,
+  myAgentIds,
 }: {
   table: TableView | null;
-  myAgentId: string | null;
+  myAgentIds: ReadonlySet<string>;
 }) {
   const seats = table?.seats ?? [];
 
@@ -246,7 +244,7 @@ function PlayersPanel({
       </p>
       <ul className="space-y-1.5">
         {seats.map((seat) => {
-          const mine = Boolean(seat.agentId && seat.agentId === myAgentId);
+          const mine = Boolean(seat.agentId && myAgentIds.has(seat.agentId));
           const hex = agentHex(mine ? "white" : seat.color);
           return (
             <li

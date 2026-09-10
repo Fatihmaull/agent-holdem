@@ -1,9 +1,7 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, sql as raw } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
+
 import { db } from '../db/client';
 import {
-  agentNoteRevisions,
-  agentNotes,
   agents,
   decisions,
   hands,
@@ -16,8 +14,7 @@ import {
 } from '../db/schema';
 import type { HandEvent, HandState } from '../poker/engine';
 import type { DecisionRecord } from '../agent/decide';
-import { MAX_NOTE } from '../agent/decision';
-import { MATCH, SEAT_COST, STARTING_GRANT, type MatchConfig } from '../lib/economy';
+import { MATCH, SEAT_COST, type MatchConfig } from '../lib/economy';
 import { conservative, updateRatings, type Rating } from '../lib/rating';
 
 export interface SeatedAgent {
@@ -25,10 +22,7 @@ export interface SeatedAgent {
   agentId: string;
   name: string;
   color: string;
-  instructions: string;
   stack: number;
-  /** False for the control arm, which plays remembering nobody. */
-  notesEnabled: boolean;
   /** Hand this seat went broke on, or null while it still has chips. */
   bustedAtHand: number | null;
 }
@@ -40,9 +34,7 @@ export async function loadSeats(matchId: string): Promise<SeatedAgent[]> {
       agentId: agents.id,
       name: agents.name,
       color: agents.color,
-      instructions: agents.instructions,
       stack: seats.stack,
-      notesEnabled: agents.notesEnabled,
       bustedAtHand: seats.bustedAtHand,
     })
     .from(seats)
@@ -109,9 +101,10 @@ export async function clearInHand(matchId: string): Promise<void> {
   await db.update(seats).set({ inHand: false }).where(eq(seats.matchId, matchId));
 }
 
-/** Marks whether an agent is looking for a game. */
-export async function setSeeking(agentId: string, seeking: boolean): Promise<void> {
-  await db.update(agents).set({ seeking }).where(eq(agents.id, agentId));
+/** An owner's chip balance. Read on connect so an agent can say why it is idle. */
+export async function balanceOf(userId: string): Promise<number> {
+  const [row] = await db.select({ chips: users.chips }).from(users).where(eq(users.id, userId)).limit(1);
+  return row?.chips ?? 0;
 }
 
 export interface Candidate {
@@ -125,14 +118,19 @@ export interface Candidate {
 }
 
 /**
- * Everyone waiting for a game.
+ * Everyone waiting for a game, out of those currently connected and ready.
  *
- * An agent qualifies by being switched on, owned, not already sitting in a
- * match, and able to cover a seat. Ordered by how long they have waited, so the
- * matchmaker can widen a band for whoever has been waiting longest rather than
- * for whoever it happened to read first.
+ * Readiness is not a column any more: an agent is looking for a game when it
+ * has a socket open and has said so on it. The caller passes in who that is,
+ * because only the process holding the sockets knows, and this adds the two
+ * conditions the database owns: not already seated, and able to cover a seat.
+ *
+ * Ordered by how long they have waited, so the matchmaker widens a band around
+ * whoever has waited longest rather than whoever it read first.
  */
-export async function queuedAgents(): Promise<Candidate[]> {
+export async function queuedAgents(readyIds: readonly string[]): Promise<Candidate[]> {
+  if (readyIds.length === 0) return [];
+
   const rows = await db
     .select({
       agentId: agents.id,
@@ -147,8 +145,8 @@ export async function queuedAgents(): Promise<Candidate[]> {
     .leftJoin(seats, eq(seats.agentId, agents.id))
     .where(
       and(
+        inArray(agents.id, [...readyIds]),
         isNull(seats.id),
-        eq(agents.seeking, true),
         raw`${users.chips} >= ${SEAT_COST}`,
       ),
     )
@@ -418,154 +416,6 @@ function placeOf(
 export async function liveMatchIds(): Promise<string[]> {
   const rows = await db.select({ id: matches.id }).from(matches).where(eq(matches.status, 'playing'));
   return rows.map((row) => row.id);
-}
-
-/**
- * Tops every lapsed account back up to what a new one starts with.
- *
- * Honest rather than generous while chips are bought with a token that costs
- * nothing, and the single thing to delete if this ever runs where they do. An
- * account already above the line is left alone, so this never hands chips to
- * anybody who is playing successfully.
- */
-export async function topUpLapsedAccounts(): Promise<number> {
-  return db.transaction(async (tx) => {
-    const short = await tx
-      .select({ id: users.id, chips: users.chips })
-      .from(users)
-      .where(raw`${users.chips} < ${STARTING_GRANT}`);
-
-    for (const account of short) {
-      const delta = STARTING_GRANT - account.chips;
-      await tx.update(users).set({ chips: STARTING_GRANT }).where(eq(users.id, account.id));
-      await tx.insert(ledgerEntries).values({
-        userId: account.id,
-        delta,
-        balanceAfter: STARTING_GRANT,
-        reason: 'grant',
-        reference: 'daily-top-up',
-      });
-    }
-
-    return short.length;
-  });
-}
-
-/**
- * What this agent has written about each of the given opponents in this match.
- *
- * Scoped to the match on purpose. Every agent sits down knowing nobody, so an
- * owner who rewrites an agent between matches is not facing opponents who
- * remember the version it used to be.
- */
-export async function loadNotes(matchId: string, authorId: string, subjectIds: string[]): Promise<Map<string, string>> {
-  if (subjectIds.length === 0) return new Map();
-
-  const rows = await db
-    .select({ subjectId: agentNotes.subjectId, text: agentNotes.text })
-    .from(agentNotes)
-    .where(
-      and(
-        eq(agentNotes.matchId, matchId),
-        eq(agentNotes.authorId, authorId),
-        inArray(agentNotes.subjectId, subjectIds),
-      ),
-    );
-
-  return new Map(rows.map((row) => [row.subjectId, row.text]));
-}
-
-export interface MatchNote {
-  authorId: string;
-  authorName: string;
-  subjectId: string;
-  subjectName: string;
-  text: string;
-  updatedAt: Date;
-  /** How many times this read has been rewritten, this version included. */
-  revisions: number;
-}
-
-/**
- * Every note written inside one match.
- *
- * Public while the match is running, because a spectator watching a read form
- * and then break is watching the hypothesis being tested. Once it ends the
- * route serving this narrows it to the owners involved, so nobody mines a
- * finished match for an edge in the next one.
- */
-export async function matchNotes(matchId: string): Promise<MatchNote[]> {
-  const author = alias(agents, 'author');
-  const subject = alias(agents, 'subject');
-
-  return db
-    .select({
-      authorId: agentNotes.authorId,
-      authorName: author.name,
-      subjectId: agentNotes.subjectId,
-      subjectName: subject.name,
-      text: agentNotes.text,
-      updatedAt: agentNotes.updatedAt,
-      revisions: raw<number>`(
-        select count(*)::int from ${agentNoteRevisions}
-        where ${agentNoteRevisions.matchId} = ${agentNotes.matchId}
-          and ${agentNoteRevisions.authorId} = ${agentNotes.authorId}
-          and ${agentNoteRevisions.subjectId} = ${agentNotes.subjectId}
-      )`,
-    })
-    .from(agentNotes)
-    .innerJoin(author, eq(author.id, agentNotes.authorId))
-    .innerJoin(subject, eq(subject.id, agentNotes.subjectId))
-    .where(eq(agentNotes.matchId, matchId))
-    .orderBy(desc(agentNotes.updatedAt));
-}
-
-/**
- * Replaces what an agent remembers about one opponent, keeping the version it
- * is replacing. Blank text erases the note rather than storing an empty one, so
- * an agent can genuinely decide an opponent is not worth remembering.
- */
-export async function saveNote(input: {
-  matchId: string;
-  authorId: string;
-  subjectId: string;
-  text: string;
-  handId: string | null;
-}): Promise<void> {
-  const text = input.text.trim().slice(0, MAX_NOTE);
-
-  await db.transaction(async (tx) => {
-    if (text.length === 0) {
-      await tx
-        .delete(agentNotes)
-        .where(
-          and(
-            eq(agentNotes.matchId, input.matchId),
-            eq(agentNotes.authorId, input.authorId),
-            eq(agentNotes.subjectId, input.subjectId),
-          ),
-        );
-    } else {
-      await tx
-        .insert(agentNotes)
-        .values({ matchId: input.matchId, authorId: input.authorId, subjectId: input.subjectId, text })
-        .onConflictDoUpdate({
-          target: [agentNotes.matchId, agentNotes.authorId, agentNotes.subjectId],
-          set: { text, updatedAt: new Date() },
-        });
-    }
-
-    // The erasure is recorded too. An agent deciding a read was wrong is
-    // exactly as interesting as it forming one, and a gap in the history would
-    // read as the agent never having changed its mind.
-    await tx.insert(agentNoteRevisions).values({
-      matchId: input.matchId,
-      authorId: input.authorId,
-      subjectId: input.subjectId,
-      text,
-      handId: input.handId,
-    });
-  });
 }
 
 export interface PersistedHand {

@@ -2,39 +2,19 @@ CREATE TYPE "public"."decision_outcome" AS ENUM('decided', 'timeout', 'error');-
 CREATE TYPE "public"."deposit_status" AS ENUM('pending', 'credited', 'expired', 'rejected');--> statement-breakpoint
 CREATE TYPE "public"."ledger_reason" AS ENUM('deposit', 'grant', 'match-buy-in', 'match-cash-out', 'entry-fee', 'adjustment');--> statement-breakpoint
 CREATE TYPE "public"."match_status" AS ENUM('waiting', 'playing', 'elimination', 'cap', 'abandoned');--> statement-breakpoint
-CREATE TABLE "agent_note_revisions" (
-	"id" bigserial PRIMARY KEY NOT NULL,
-	"author_id" uuid NOT NULL,
-	"subject_id" uuid NOT NULL,
-	"match_id" uuid NOT NULL,
-	"text" text NOT NULL,
-	"hand_id" uuid,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "agent_notes" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"author_id" uuid NOT NULL,
-	"subject_id" uuid NOT NULL,
-	"match_id" uuid NOT NULL,
-	"text" text NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "agents" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"user_id" uuid,
+	"user_id" uuid NOT NULL,
 	"name" text NOT NULL,
 	"color" text NOT NULL,
-	"script" text,
-	"notes_enabled" boolean DEFAULT true NOT NULL,
-	"seeking" boolean DEFAULT true NOT NULL,
+	"token_hash" text NOT NULL,
+	"last_seen_at" timestamp with time zone,
+	"last_close_reason" text,
 	"registry_id" text,
 	"registry_chain_id" integer,
 	"rating_mu" real DEFAULT 25 NOT NULL,
 	"rating_sigma" real DEFAULT 8.333333333333334 NOT NULL,
 	"matches_played" integer DEFAULT 0 NOT NULL,
-	"instructions" text DEFAULT '' NOT NULL,
 	"hands_played" integer DEFAULT 0 NOT NULL,
 	"hands_won" integer DEFAULT 0 NOT NULL,
 	"chips_won" bigint DEFAULT 0 NOT NULL,
@@ -174,16 +154,10 @@ CREATE TABLE "users" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"address" text NOT NULL,
 	"chips" integer DEFAULT 0 NOT NULL,
+	"last_claim_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "agent_note_revisions" ADD CONSTRAINT "agent_note_revisions_author_id_agents_id_fk" FOREIGN KEY ("author_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_note_revisions" ADD CONSTRAINT "agent_note_revisions_subject_id_agents_id_fk" FOREIGN KEY ("subject_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_note_revisions" ADD CONSTRAINT "agent_note_revisions_match_id_matches_id_fk" FOREIGN KEY ("match_id") REFERENCES "public"."matches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_note_revisions" ADD CONSTRAINT "agent_note_revisions_hand_id_hands_id_fk" FOREIGN KEY ("hand_id") REFERENCES "public"."hands"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_notes" ADD CONSTRAINT "agent_notes_author_id_agents_id_fk" FOREIGN KEY ("author_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_notes" ADD CONSTRAINT "agent_notes_subject_id_agents_id_fk" FOREIGN KEY ("subject_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "agent_notes" ADD CONSTRAINT "agent_notes_match_id_matches_id_fk" FOREIGN KEY ("match_id") REFERENCES "public"."matches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agents" ADD CONSTRAINT "agents_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "attestations" ADD CONSTRAINT "attestations_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "decisions" ADD CONSTRAINT "decisions_hand_id_hands_id_fk" FOREIGN KEY ("hand_id") REFERENCES "public"."hands"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -198,9 +172,8 @@ ALTER TABLE "results" ADD CONSTRAINT "results_agent_id_agents_id_fk" FOREIGN KEY
 ALTER TABLE "results" ADD CONSTRAINT "results_match_id_matches_id_fk" FOREIGN KEY ("match_id") REFERENCES "public"."matches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "seats" ADD CONSTRAINT "seats_match_id_matches_id_fk" FOREIGN KEY ("match_id") REFERENCES "public"."matches"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "seats" ADD CONSTRAINT "seats_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "agent_note_revisions_pair_idx" ON "agent_note_revisions" USING btree ("match_id","author_id","subject_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "agent_notes_pair_idx" ON "agent_notes" USING btree ("match_id","author_id","subject_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "agents_user_idx" ON "agents" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "agents_user_idx" ON "agents" USING btree ("user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "agents_token_idx" ON "agents" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "attestations_agent_idx" ON "attestations" USING btree ("agent_id","created_at");--> statement-breakpoint
 CREATE INDEX "decisions_hand_idx" ON "decisions" USING btree ("hand_id","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "deposit_intents_tx_idx" ON "deposit_intents" USING btree ("chain_id","tx_hash");--> statement-breakpoint

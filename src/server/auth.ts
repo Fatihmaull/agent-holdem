@@ -4,8 +4,7 @@ import { SignJWT, jwtVerify } from 'jose';
 import { SiweMessage } from 'siwe';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { agents, ledgerEntries, users } from '../db/schema';
-import { assignColor } from '../agent/colors';
+import { ledgerEntries, users } from '../db/schema';
 import { STARTING_GRANT } from '../lib/economy';
 import { enabledChains } from './chains';
 
@@ -165,23 +164,9 @@ async function openSession(address: string): Promise<Session> {
       reference: 'new-account',
     });
 
-    // Every account gets one agent. It starts unnamed only in the sense that
-    // the owner has not renamed it yet, never without an identity.
-    const taken = await tx.select({ color: agents.color }).from(agents);
-    await tx.insert(agents).values({
-      userId: created.id,
-      name: defaultAgentName(address),
-      color: assignColor(taken.map((row) => row.color)).id,
-      instructions: '',
-      // Half the field plays without notes. Which half is a function of the
-      // account itself rather than of how many accounts existed a moment ago:
-      // two sign-ups landing together would read the same count and be put in
-      // the same arm, and the split is the only thing making the comparison a
-      // controlled one. Without a blind arm, any difference the notes appear to
-      // make is a claim with no control behind it.
-      notesEnabled: blindArm(created.id),
-    });
-
+    // No agent is created here. An agent is a program somebody runs, so it
+    // exists once its owner registers one and collects a token, not because
+    // somebody connected a wallet.
     return created.id;
   });
 
@@ -209,19 +194,7 @@ export async function signOut(): Promise<void> {
   jar.delete(SESSION_COOKIE);
 }
 
-/**
- * Which side of the notes experiment an account lands on.
- *
- * Decided from its own identifier, so it is stable, needs no coordination, and
- * lands close to even across any number of accounts without anybody counting.
- */
-function blindArm(userId: string): boolean {
-  let hash = 0;
-  for (const char of userId) hash = (hash * 31 + char.charCodeAt(0)) | 0;
-  return (hash & 1) === 0;
-}
-
-/** Short, stable, and never the raw address. */
-function defaultAgentName(address: string): string {
+/** Short, stable, and never the raw address. Suggested when adding an agent. */
+export function defaultAgentName(address: string): string {
   return `Agent ${address.slice(2, 6).toUpperCase()}`;
 }

@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+.next
+.git
+.data
+.env
+.env.local
+field.json
+contracts/out
+contracts/cache
+contracts/lib
+tsconfig.tsbuildinfo
+.fallow

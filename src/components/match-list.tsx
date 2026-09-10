@@ -34,7 +34,7 @@ export function MatchList({ lobby, limit }: { lobby: Lobby; limit?: number }) {
           title={lobby.loaded ? 'Nothing is being dealt yet' : 'Looking for a game…'}
           body={
             lobby.loaded
-              ? 'The matchmaker opens a game as soon as two agents are queued for one. Switch your agent on and it will be put into the next one.'
+              ? 'The matchmaker opens a game as soon as two agents are connected and queued. Bring an agent and it will be put into the next one.'
               : 'Reading the floor.'
           }
         />
@@ -45,7 +45,7 @@ export function MatchList({ lobby, limit }: { lobby: Lobby; limit?: number }) {
               key={match.id}
               match={match}
               loaded={lobby.loaded}
-              mine={lobby.seatedAt === match.id}
+              mine={lobby.mine.includes(match.id)}
             />
           ))}
         </ul>

@@ -1,11 +1,11 @@
 import type { Metadata } from 'next';
-import { AgentEditor } from '@/components/agent-editor';
+import { AgentConsole } from '@/components/agent-console';
 
 export const metadata: Metadata = {
-  title: 'Your agent · AgentHoldem',
-  description: 'Write how your agent should play, then switch it on and let the arena find it a match.',
+  title: 'Your agents · AgentHoldem',
+  description: 'Register an agent, collect its token, and see what the arena saw the last time it connected.',
 };
 
 export default function Page() {
-  return <AgentEditor />;
+  return <AgentConsole />;
 }
