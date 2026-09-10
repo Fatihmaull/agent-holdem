@@ -1,6 +1,7 @@
 'use client';
 
 import { encodeFunctionData, numberToHex } from 'viem';
+import type { ChainInfo } from '@/lib/chains';
 import { chipVaultAbi } from '@/server/vault-abi';
 
 /**
@@ -22,31 +23,22 @@ declare global {
 
 export class WalletError extends Error {}
 
-const CHAIN_ID = Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 97);
-
-const BNB_TESTNET = {
-  chainId: numberToHex(97),
-  chainName: 'BNB Smart Chain Testnet',
-  nativeCurrency: { name: 'tBNB', symbol: 'tBNB', decimals: 18 },
-  rpcUrls: ['https://data-seed-prebsc-1-s1.bnbchain.org:8545'],
-  blockExplorerUrls: ['https://testnet.bscscan.com'],
-};
-
 function wallet(): Eip1193Provider {
   const injected = typeof window === 'undefined' ? undefined : window.ethereum;
   if (!injected) throw new WalletError('No wallet found. Install MetaMask or another browser wallet to continue.');
   return injected;
 }
 
-function hasWallet(): boolean {
+/** Whether the browser has an injected wallet at all. */
+export function hasWallet(): boolean {
   return typeof window !== 'undefined' && Boolean(window.ethereum);
 }
 
-export async function connect(): Promise<string> {
+export async function connect(chain: ChainInfo): Promise<string> {
   const accounts = (await wallet().request({ method: 'eth_requestAccounts' })) as string[];
   const address = accounts[0];
   if (!address) throw new WalletError('Your wallet returned no account.');
-  await ensureChain();
+  await ensureChain(chain);
   return address;
 }
 
@@ -56,9 +48,13 @@ export async function currentAddress(): Promise<string | null> {
   return accounts[0] ?? null;
 }
 
-/** Moves the wallet to BNB testnet, adding the network if it does not know it. */
-async function ensureChain(): Promise<void> {
-  const target = numberToHex(CHAIN_ID);
+/**
+ * Moves the wallet to a network, describing it first if the wallet has never
+ * heard of it. The description comes from the chain registry, so a network the
+ * wallet does not ship with is added rather than refused.
+ */
+export async function ensureChain(chain: ChainInfo): Promise<void> {
+  const target = numberToHex(chain.id);
   const current = (await wallet().request({ method: 'eth_chainId' })) as string;
   if (current?.toLowerCase() === target.toLowerCase()) return;
 
@@ -67,7 +63,18 @@ async function ensureChain(): Promise<void> {
   } catch (error) {
     const code = (error as { code?: number }).code;
     if (code !== 4902) throw error;
-    await wallet().request({ method: 'wallet_addEthereumChain', params: [BNB_TESTNET] });
+    await wallet().request({
+      method: 'wallet_addEthereumChain',
+      params: [
+        {
+          chainId: target,
+          chainName: chain.name,
+          nativeCurrency: chain.nativeCurrency,
+          rpcUrls: [chain.defaultRpcUrl],
+          blockExplorerUrls: [chain.explorer.url],
+        },
+      ],
+    });
   }
 }
 
@@ -78,11 +85,12 @@ export async function signMessage(address: string, message: string): Promise<str
 /** Sends the buy-in to the vault with the intent the server issued. */
 export async function sendDeposit(options: {
   from: string;
+  chain: ChainInfo;
   vault: `0x${string}`;
   intentId: `0x${string}`;
   valueWei: string;
 }): Promise<string> {
-  await ensureChain();
+  await ensureChain(options.chain);
 
   const data = encodeFunctionData({
     abi: chipVaultAbi,

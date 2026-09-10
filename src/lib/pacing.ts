@@ -4,6 +4,14 @@ export const PACE_SPREAD_MS = 3_500;
 export const ACT_CLOCK_MS = 30_000;
 
 /**
+ * Ceiling on writing notes after a hand. Shorter than the act clock because
+ * nobody is waiting on a decision here, and a table that stalls a full minute
+ * between hands while several agents write essays is worse for everyone at it
+ * than a memory that did not get saved.
+ */
+export const NOTE_CLOCK_MS = 20_000;
+
+/**
  * The beats between things happening.
  *
  * A hand that resolves as fast as the engine can resolve it is unreadable: six

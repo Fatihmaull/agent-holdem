@@ -4,8 +4,10 @@ import { SignJWT, jwtVerify } from 'jose';
 import { SiweMessage } from 'siwe';
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { agents, users } from '../db/schema';
+import { agents, ledgerEntries, users } from '../db/schema';
 import { assignColor } from '../agent/colors';
+import { STARTING_GRANT } from '../lib/economy';
+import { enabledChains } from './chains';
 
 const SESSION_COOKIE = 'ah_session';
 const NONCE_COOKIE = 'ah_nonce';
@@ -124,9 +126,14 @@ export async function signIn(message: string, signature: string, requestHost: st
     return { ok: false, error: 'That sign-in message could not be read.' };
   }
 
-  const expectedChain = Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 97);
-  if (parsed.chainId !== expectedChain) {
-    return { ok: false, error: `Switch your wallet to chain ${expectedChain} and sign again.` };
+  // Any chain this deployment settles on is an acceptable place to have signed.
+  // The chain a signature names is not what makes it safe here: the nonce and
+  // the domain are. Pinning one network instead would only break the player who
+  // switched chains between fetching the message and signing it.
+  const chains = enabledChains();
+  if (!chains.some((chain) => chain.id === parsed.chainId)) {
+    const names = chains.map((chain) => chain.shortName).join(' or ');
+    return { ok: false, error: `Switch your wallet to ${names} and sign again.` };
   }
 
   const result = await parsed.verify({ signature, nonce: issued.nonce, domain: host }, { suppressExceptions: true });
@@ -142,7 +149,21 @@ async function openSession(address: string): Promise<Session> {
     const [existing] = await tx.select({ id: users.id }).from(users).where(eq(users.address, address)).limit(1);
     if (existing) return existing.id;
 
-    const [created] = await tx.insert(users).values({ address }).returning({ id: users.id });
+    const [created] = await tx
+      .insert(users)
+      .values({ address, chips: STARTING_GRANT })
+      .returning({ id: users.id });
+
+    // Written to the ledger like any other movement. The chips column is a
+    // cache of these rows, so a balance that appeared without one would be the
+    // only chips in the system nothing accounts for.
+    await tx.insert(ledgerEntries).values({
+      userId: created.id,
+      delta: STARTING_GRANT,
+      balanceAfter: STARTING_GRANT,
+      reason: 'grant',
+      reference: 'new-account',
+    });
 
     // Every account gets one agent. It starts unnamed only in the sense that
     // the owner has not renamed it yet, never without an identity.
@@ -152,6 +173,13 @@ async function openSession(address: string): Promise<Session> {
       name: defaultAgentName(address),
       color: assignColor(taken.map((row) => row.color)).id,
       instructions: '',
+      // Half the field plays without notes. Which half is a function of the
+      // account itself rather than of how many accounts existed a moment ago:
+      // two sign-ups landing together would read the same count and be put in
+      // the same arm, and the split is the only thing making the comparison a
+      // controlled one. Without a blind arm, any difference the notes appear to
+      // make is a claim with no control behind it.
+      notesEnabled: blindArm(created.id),
     });
 
     return created.id;
@@ -179,6 +207,18 @@ export async function getSession(): Promise<Session | null> {
 export async function signOut(): Promise<void> {
   const jar = await cookies();
   jar.delete(SESSION_COOKIE);
+}
+
+/**
+ * Which side of the notes experiment an account lands on.
+ *
+ * Decided from its own identifier, so it is stable, needs no coordination, and
+ * lands close to even across any number of accounts without anybody counting.
+ */
+function blindArm(userId: string): boolean {
+  let hash = 0;
+  for (const char of userId) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return (hash & 1) === 0;
 }
 
 /** Short, stable, and never the raw address. */

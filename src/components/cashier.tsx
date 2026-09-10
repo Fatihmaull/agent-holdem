@@ -2,20 +2,20 @@
 /* eslint-disable @next/next/no-img-element */ // Same fixed-size chip art as the felt.
 
 import { useEffect, useRef, useState } from 'react';
-import { CHIP_PACKAGES, chipsToWei, formatBnb, formatChips, formatUsd, quoteRedemption } from '@/lib/economy';
-import { sendDeposit, shortAddress } from '@/lib/wallet';
+import { chainByKey } from '@/lib/chains';
+import { CHIP_PACKAGES, chipsToWei, formatChips, formatNative, formatUsd } from '@/lib/economy';
+import { sendDeposit } from '@/lib/wallet';
 import { useAccount } from './account-context';
+import { useChain } from './chain-context';
 
 type Stage = 'idle' | 'signing' | 'confirming' | 'done';
 
 export function Cashier({ onClose }: { onClose: () => void }) {
   const { account, refresh } = useAccount();
+  const { chain } = useChain();
   const [stage, setStage] = useState<Stage>('idle');
   const [status, setStatus] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const [redeemAmount, setRedeemAmount] = useState('');
-  /** Chip count the player has been asked to confirm, once they have asked to redeem it. */
-  const [confirming, setConfirming] = useState<number | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
 
   // Escape closes, and Tab stays inside. A modal the keyboard can walk out of
@@ -63,13 +63,16 @@ export function Cashier({ onClose }: { onClose: () => void }) {
     void (async () => {
       try {
         const response = await fetch('/api/cashier/pending', { cache: 'no-store' });
-        const body = (await response.json()) as { deposits?: Array<{ txHash: string }> };
+        const body = (await response.json()) as { deposits?: Array<{ txHash: string; chainKey: string }> };
         const waiting = body.deposits?.[0];
         if (!waiting || cancelled) return;
 
+        // Finished on the network it was paid on, whatever the player is
+        // looking at now. A deposit does not follow them between chains.
+        const paidOn = chainByKey(waiting.chainKey);
         setStage('confirming');
-        setStatus('Finishing a deposit from earlier.');
-        const credited = await pollConfirm(waiting.txHash, (message) => {
+        setStatus(`Finishing a deposit from earlier${paidOn ? ` on ${paidOn.shortName}` : ''}.`);
+        const credited = await pollConfirm(waiting.txHash, waiting.chainKey, (message) => {
           if (!cancelled) setStatus(message);
         });
         if (cancelled) return;
@@ -91,7 +94,7 @@ export function Cashier({ onClose }: { onClose: () => void }) {
   }, [account, refresh]);
 
   async function buy(packageId: string) {
-    if (!account) return;
+    if (!account || !chain) return;
     setFailure(null);
     setStage('signing');
     setStatus('Approve the transaction in your wallet.');
@@ -100,7 +103,7 @@ export function Cashier({ onClose }: { onClose: () => void }) {
       const intentResponse = await fetch('/api/cashier/intent', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ packageId }),
+        body: JSON.stringify({ packageId, chain: chain.key }),
       });
       const intent = (await intentResponse.json()) as {
         intentId?: string;
@@ -113,6 +116,7 @@ export function Cashier({ onClose }: { onClose: () => void }) {
 
       const txHash = await sendDeposit({
         from: account.address,
+        chain,
         vault: intent.vault!,
         intentId: intent.bytes32,
         valueWei: intent.valueWei!,
@@ -130,7 +134,7 @@ export function Cashier({ onClose }: { onClose: () => void }) {
       setStage('confirming');
       setStatus('Waiting for the network to confirm. This takes a few blocks.');
 
-      const credited = await pollConfirm(txHash, (message) => setStatus(message));
+      const credited = await pollConfirm(txHash, chain.key, (message) => setStatus(message));
       await refresh();
       setStage('done');
       setStatus(`${formatChips(credited)} chips added.`);
@@ -141,48 +145,11 @@ export function Cashier({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function cashOut() {
-    const chips = Number(redeemAmount);
-    if (!Number.isInteger(chips) || chips <= 0) {
-      setFailure('Enter a whole number of chips to redeem.');
-      return;
-    }
-
-    // A payout leaves the building. Nothing here can call it back, so it is
-    // asked for twice rather than fired on a single stray click.
-    if (confirming !== chips) {
-      setFailure(null);
-      setConfirming(chips);
-      return;
-    }
-    setConfirming(null);
-
-    setFailure(null);
-    setStage('confirming');
-    setStatus('Sending your payout.');
-
-    try {
-      const response = await fetch('/api/cashier/redeem', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ chips }),
-      });
-      const body = (await response.json()) as { netWei?: string; error?: string };
-      if (!response.ok || !body.netWei) throw new Error(body.error ?? 'The payout failed.');
-
-      await refresh();
-      setRedeemAmount('');
-      setStage('done');
-      setStatus(`${formatBnb(BigInt(body.netWei))} tBNB sent to your wallet.`);
-    } catch (error) {
-      setStage('idle');
-      setStatus(null);
-      setFailure(describe(error));
-    }
-  }
-
   const busy = stage === 'signing' || stage === 'confirming';
-  const redeemQuote = Number(redeemAmount) > 0 ? quoteRedemption(Math.floor(Number(redeemAmount))) : null;
+  const symbol = chain?.nativeCurrency.symbol ?? '';
+  // A chain can be switched on before its vault exists. Watching still works;
+  // buying does not, and the dialog says so rather than failing at the wallet.
+  const settles = Boolean(chain?.vault);
 
   return (
     <div
@@ -203,7 +170,8 @@ export function Cashier({ onClose }: { onClose: () => void }) {
       >
         <div className="flex items-baseline gap-4 border-b border-line px-6 py-5">
           <h2 className="text-2xl text-ink">Cashier</h2>
-          <p className="mono text-xs text-faint">1 chip = 0.00001 tBNB</p>
+          <p className="mono text-xs text-faint">1 chip = 0.00001 {symbol || 'native token'}</p>
+          {chain ? <p className="text-xs text-faint">on {chain.name}</p> : null}
           <button
             type="button"
             onClick={onClose}
@@ -216,6 +184,7 @@ export function Cashier({ onClose }: { onClose: () => void }) {
         <div className="grid gap-px bg-line sm:grid-cols-3">
           {CHIP_PACKAGES.map((entry) => {
             const wei = chipsToWei(entry.chips);
+            const usd = formatUsd(wei, chain?.notionalUsd);
             return (
               <div key={entry.id} className="flex flex-col gap-4 bg-surface p-6">
                 <div className="flex items-baseline justify-between">
@@ -231,15 +200,17 @@ export function Cashier({ onClose }: { onClose: () => void }) {
 
                 <div>
                   <div className="mono text-2xl text-ink tabular-nums">{formatChips(entry.chips)}</div>
-                  <div className="mono text-[0.8125rem] text-muted tabular-nums">{formatBnb(wei)} tBNB</div>
-                  <div className="mono text-xs text-faint tabular-nums">
-                    {formatUsd(wei)} at a fixed testnet rate
+                  <div className="mono text-[0.8125rem] text-muted tabular-nums">
+                    {formatNative(wei)} {symbol}
                   </div>
+                  {usd ? (
+                    <div className="mono text-xs text-faint tabular-nums">{usd} at a fixed testnet rate</div>
+                  ) : null}
                 </div>
 
                 <button
                   type="button"
-                  disabled={busy || !account}
+                  disabled={busy || !account || !settles}
                   onClick={() => void buy(entry.id)}
                   className="mt-auto inline-flex h-10 items-center justify-center rounded-control bg-accent px-4 text-sm font-medium text-accent-ink transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-45"
                 >
@@ -251,44 +222,21 @@ export function Cashier({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="border-t border-line bg-surface-2 px-6 py-5">
-          <h3 className="label mb-3 text-faint">Cash out</h3>
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-faint">Chips to redeem</span>
-              <input
-                inputMode="numeric"
-                value={redeemAmount}
-                onChange={(event) => {
-                  setRedeemAmount(event.target.value.replace(/[^\d]/g, ''));
-                  setConfirming(null);
-                }}
-                placeholder={account ? String(account.chips) : '0'}
-                className="mono h-10 w-44 rounded-control border border-line-input bg-surface-2 px-3 text-ink tabular-nums outline-none focus:border-accent"
-              />
-            </label>
+          <h3 className="label mb-2 text-faint">There is no cash out</h3>
+          <p className="max-w-[68ch] text-sm text-muted">
+            Chips go in and do not come back out. The vault has no function that pays a player, so this is a property
+            of the contract rather than a rule we keep. What a chip buys is table time and a place on the record.
+          </p>
+        </div>
 
-            <button
-              type="button"
-              disabled={busy || !account}
-              onClick={() => void cashOut()}
-              className={`inline-flex h-10 items-center justify-center rounded-control px-4 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-                confirming !== null
-                  ? 'bg-danger text-ink'
-                  : 'border border-line-strong bg-surface-2 text-ink hover:bg-surface-3'
-              }`}
-            >
-              {confirming !== null ? 'Confirm payout' : 'Redeem'}
-            </button>
-
-            <p className="max-w-[34ch] text-xs text-faint">
-              {confirming !== null && redeemQuote
-                ? `Sending ${formatBnb(redeemQuote.netWei)} tBNB to ${account ? shortAddress(account.address) : 'your wallet'}. This cannot be undone.`
-                : redeemQuote
-                  ? `You receive ${formatBnb(redeemQuote.netWei)} tBNB. Fee ${formatBnb(redeemQuote.feeWei)} tBNB, 5%.`
-                  : 'A 5% fee is taken on redemption. Buying chips is free.'}
+        {chain && !settles ? (
+          <div className="border-t border-line px-6 py-4">
+            <p className="text-sm text-muted">
+              No vault has been deployed on {chain.name} yet, so chips cannot be bought here. Switch networks in the
+              header to use the cashier.
             </p>
           </div>
-        </div>
+        ) : null}
 
         {status || failure ? (
           <div className="border-t border-line px-6 py-4">
@@ -329,12 +277,12 @@ function ChipTower({ chips }: { chips: number }) {
  * A deposit is credited only once the chain has confirmed it, so the cashier
  * keeps asking rather than pretending the chips have arrived.
  */
-async function pollConfirm(txHash: string, onStatus: (message: string) => void): Promise<number> {
+async function pollConfirm(txHash: string, chainKey: string, onStatus: (message: string) => void): Promise<number> {
   for (let attempt = 0; attempt < 40; attempt++) {
     const response = await fetch('/api/cashier/confirm', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ txHash }),
+      body: JSON.stringify({ txHash, chain: chainKey }),
     });
     const body = (await response.json()) as { chips?: number; error?: string };
 

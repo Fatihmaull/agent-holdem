@@ -51,8 +51,17 @@ export interface HandState {
   /** Size of the last full raise, which sets the minimum for the next one. */
   lastRaiseSize: number;
   pots: Pot[];
+  /** What the house took from this hand. Zero until the pot is settled. */
   events: HandEvent[];
 }
+
+/**
+ * The house's cut, in the two numbers every cardroom publishes.
+ *
+ * The engine takes the cap as a plain number rather than working it out, so the
+ * rule about how a cap scales with the size of the game stays in one place
+ * outside the engine and this stays arithmetic.
+ */
 
 export type HandEvent =
   | { type: 'hand-start'; handId: string; button: number; blinds: [number, number] }
@@ -415,17 +424,47 @@ function settle(state: HandState): void {
     }
     orphaned = 0;
   }
-  if (orphaned > 0 && pots.length > 0) pots[pots.length - 1].amount += orphaned;
+  // Chips from layers everybody folded out of. They join the last real pot, and
+  // if there is somehow no real pot they become one: a chip that belongs to no
+  // layer is still a chip somebody put in, and dropping it would break the only
+  // invariant this file has, which is that what goes in comes out.
+  if (orphaned > 0) {
+    if (pots.length > 0) pots[pots.length - 1].amount += orphaned;
+    else pots.push({ amount: orphaned, eligible: contenders(state).map((seat) => seat.index) });
+  }
   state.pots = pots;
 
   const live = contenders(state);
   const uncontested = live.length === 1;
 
+  const winnersByPot = pots.map((pot) => {
+    const eligible = pot.eligible.filter((index) => !state.seats[index].folded);
+    if (eligible.length <= 1) return eligible;
+
+    const scores = eligible.map((index) => evaluate([...state.seats[index].hole!, ...state.board]));
+    const best = Math.max(...scores);
+    return eligible.filter((_, i) => scores[i] === best);
+  });
+
+  // Only a hand that takes chips has to be tabled. A player who is beaten may
+  // throw theirs away unseen, as at any real table, which is why an opponent
+  // cannot accumulate a record of everyone's holdings by sitting there: most of
+  // what happens at a showdown stays unknown.
+  //
+  // The exception is the real one. Once somebody is all in there is no more
+  // betting to protect, so every live hand is turned face up and the whole
+  // table sees it. All-in pots are where reads actually come from.
   if (!uncontested && state.street === 'showdown') {
-    for (const seat of live) {
+    const allInPot = live.some((seat) => seat.allIn);
+    const shown = allInPot
+      ? live.map((seat) => seat.index)
+      : [...new Set(winnersByPot.flat())].sort((a, b) => a - b);
+
+    for (const index of shown) {
+      const seat = state.seats[index];
       state.events.push({
         type: 'showdown',
-        seat: seat.index,
+        seat: index,
         hole: seat.hole!,
         score: evaluate([...seat.hole!, ...state.board]),
       });
@@ -433,17 +472,8 @@ function settle(state: HandState): void {
   }
 
   pots.forEach((pot, potIndex) => {
-    const eligible = pot.eligible.filter((index) => !state.seats[index].folded);
-    if (eligible.length === 0) return;
-
-    let winners: number[];
-    if (eligible.length === 1) {
-      winners = eligible;
-    } else {
-      const scores = eligible.map((index) => evaluate([...state.seats[index].hole!, ...state.board]));
-      const best = Math.max(...scores);
-      winners = eligible.filter((_, i) => scores[i] === best);
-    }
+    const winners = winnersByPot[potIndex];
+    if (winners.length === 0) return;
 
     const share = Math.floor(pot.amount / winners.length);
     let remainder = pot.amount - share * winners.length;
@@ -468,6 +498,7 @@ function settle(state: HandState): void {
     stacks: state.seats.map((seat) => ({ seat: seat.index, stack: seat.stack })),
   });
 }
+
 
 function sameSeats(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every((seat, i) => seat === b[i]);

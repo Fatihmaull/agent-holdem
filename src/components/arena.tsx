@@ -2,22 +2,22 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { formatBlurb, formatChips } from "@/lib/economy";
-import type { TableFormat } from "@/lib/economy";
+import { formatChips } from "@/lib/economy";
 import type { TableView } from "@/server/view";
 import { useAccount } from "./account-context";
 import { Felt } from "./felt";
+import { ReadsPanel } from "./reads-panel";
 import { ThinkingPanel, type BrainState } from "./thinking-panel";
 import { ChipDot, DealerButton, agentHex } from "./table-art";
-import { seatLabel, useTableStream } from "./use-table-stream";
+import { seatLabel, useMatchStream } from "./use-match-stream";
 import { useLobby } from "./use-lobby";
-import { useSeating } from "./use-seating";
-import { Badge, Button, ButtonLink, Card, LiveBadge } from "./ui";
+import { Badge, ButtonLink, Card, LiveBadge } from "./ui";
 
-type Tab = "thinking" | "players" | "log";
+type Tab = "thinking" | "reads" | "players" | "log";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "thinking", label: "Thinking" },
+  { id: "reads", label: "Reads" },
   { id: "players", label: "Players" },
   { id: "log", label: "Hand log" },
 ];
@@ -28,7 +28,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
  * it says what it is at the top of every tab rather than presenting a wall of
  * unlabelled figures.
  */
-export function Arena({ tableId }: { tableId: string }) {
+export function Arena({ matchId }: { matchId: string }) {
   const {
     table,
     streaming,
@@ -38,10 +38,9 @@ export function Arena({ tableId }: { tableId: string }) {
     moved,
     potKey,
     actionKeys,
-  } = useTableStream(tableId);
+  } = useMatchStream(matchId);
   const { account } = useAccount();
   const lobby = useLobby();
-  const seating = useSeating(lobby);
   const [tab, setTab] = useState<Tab>("thinking");
   const myAgentId = account?.agent.id ?? null;
 
@@ -85,23 +84,10 @@ export function Arena({ tableId }: { tableId: string }) {
     <div className="page mx-auto w-full max-w-[104rem] px-4 py-4 sm:px-6 sm:py-6">
       <TableBar
         table={table}
-        tableId={tableId}
+        matchId={matchId}
         connected={connected}
-        seatedHere={lobby.seatedAt === tableId}
-        seatedElsewhere={lobby.seatedAt !== null && lobby.seatedAt !== tableId}
-        busy={seating.busy}
-        onSeat={() => seating.seat(tableId)}
-        onLeave={seating.leave}
+        seatedHere={lobby.seatedAt === matchId}
       />
-
-      {seating.failure ? (
-        <p
-          role="status"
-          className="mt-3 rounded-card border border-danger/40 bg-danger-soft px-4 py-2.5 text-sm text-ink"
-        >
-          {seating.failure}
-        </p>
-      ) : null}
 
       <div className="mt-4 grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_22rem] xl:grid-cols-[minmax(0,1fr)_25rem]">
         <div className="min-w-0">
@@ -112,8 +98,6 @@ export function Arena({ tableId }: { tableId: string }) {
             moved={moved}
             potKey={potKey}
             actionKeys={actionKeys}
-            onSeat={() => seating.seat(tableId)}
-            canSeat={lobby.seatedAt === null && seating.busy === null}
           />
         </div>
 
@@ -161,6 +145,8 @@ export function Arena({ tableId }: { tableId: string }) {
           >
             {tab === "thinking" ? (
               <ThinkingPanel brain={brain} deadline={table?.deadline ?? null} />
+            ) : tab === "reads" ? (
+              <ReadsPanel matchId={matchId} />
             ) : tab === "players" ? (
               <PlayersPanel table={table} myAgentId={myAgentId} />
             ) : (
@@ -180,44 +166,33 @@ export function Arena({ tableId }: { tableId: string }) {
  */
 function TableBar({
   table,
-  tableId,
+  matchId,
   connected,
   seatedHere,
-  seatedElsewhere,
-  busy,
-  onSeat,
-  onLeave,
 }: {
   table: TableView | null;
-  tableId: string;
+  matchId: string;
   connected: boolean;
   seatedHere: boolean;
-  seatedElsewhere: boolean;
-  busy: string | null;
-  onSeat: () => void;
-  onLeave: () => void;
 }) {
-  const seated = table?.seats.filter((seat) => seat.agentId).length ?? 0;
-  const full = table ? seated >= table.seatCount : false;
-
   return (
     <div>
       <nav
         aria-label="Breadcrumb"
         className="mb-3 flex items-center gap-1.5 text-sm text-faint"
       >
-        <Link href="/tables" className="transition-colors hover:text-ink">
-          Tables
+        <Link href="/matches" className="transition-colors hover:text-ink">
+          Matches
         </Link>
         <span aria-hidden>/</span>
-        <span className="text-muted">{table?.label ?? tableId}</span>
+        <span className="text-muted">{table?.label ?? matchId}</span>
       </nav>
 
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="text-xl text-ink sm:text-2xl">
-              {table?.label ?? "Loading table…"}
+              {table?.label ?? "Loading match…"}
             </h1>
             {connected ? (
               <LiveBadge
@@ -229,39 +204,23 @@ function TableBar({
           <p className="mt-1 text-sm text-muted">
             {table ? (
               <>
-                {formatBlurb(table.format as TableFormat)} · {table.smallBlind}/
-                {table.bigBlind} blinds · {formatChips(table.buyIn)} buy-in ·{" "}
-                {seated}/{table.seatCount} seated
+                {table.seatCount} agents · {table.smallBlind}/
+                {table.bigBlind} blinds · {formatChips(table.buyIn)} buy-in each
                 {table.handNumber > 0
                   ? ` · hand ${table.handNumber.toLocaleString("en-US")}`
                   : ""}
               </>
             ) : (
-              "Connecting to the table feed."
+              "Connecting to the match feed."
             )}
           </p>
         </div>
 
+        {/* Nothing to press. An agent is put into a match by the arena, so
+            there is no seat to take and none to give up. */}
         <div className="ml-auto flex items-center gap-2">
-          {seatedHere ? (
-            <Button onClick={onLeave} disabled={busy !== null}>
-              {busy === "leave" ? "Leaving…" : "Leave table"}
-            </Button>
-          ) : (
-            <Button
-              tone="primary"
-              onClick={onSeat}
-              disabled={busy !== null || full || seatedElsewhere}
-            >
-              {busy === tableId
-                ? "Seating…"
-                : full
-                  ? "Table full"
-                  : "Join this table"}
-            </Button>
-          )}
-          <ButtonLink href="/tables" tone="ghost">
-            Other tables
+          <ButtonLink href="/matches" tone="ghost">
+            Other matches
           </ButtonLink>
         </div>
       </div>

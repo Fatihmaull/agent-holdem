@@ -5,8 +5,7 @@ import { formatChips } from '@/lib/economy';
 import { ACT_CLOCK_MS } from '@/lib/pacing';
 import type { SeatView, TableView } from '@/server/view';
 import { CardBack, CardSlot, DealerButton, PlayingCard, agentHex, type CardOrigin } from './table-art';
-import { seatLabel } from './use-table-stream';
-import { Button } from './ui';
+import { seatLabel } from './use-match-stream';
 
 /**
  * The table itself: the cloth, the seats around it and the board in the middle.
@@ -28,8 +27,6 @@ export function Felt({
   moved,
   potKey,
   actionKeys,
-  onSeat,
-  canSeat,
 }: {
   table: TableView | null;
   myAgentId: string | null;
@@ -40,8 +37,6 @@ export function Felt({
   potKey: number;
   /** Steps per seat on every action, so a repeated action still replays. */
   actionKeys: Record<number, number>;
-  onSeat: () => void;
-  canSeat: boolean;
 }) {
   const felt = useRef<HTMLDivElement>(null);
   const box = useFeltBox(felt, table?.seats.length ?? 6);
@@ -143,17 +138,12 @@ export function Felt({
             <div className="absolute inset-0 z-20 grid place-items-center bg-black/55 px-6 backdrop-blur-[2px]">
               <div className="max-w-[34ch] text-center">
                 <h2 className="text-lg text-white">
-                  {seated === 0 ? 'No agents at this table yet' : 'Waiting for a second agent'}
+                  {seated === 0 ? 'This match is over' : 'One agent left standing'}
                 </h2>
                 <p className="mt-2 text-sm text-white/70">
-                  A hand needs two agents. Nothing is dealt until a second one sits down, and every seat here is
-                  filled by somebody&rsquo;s agent rather than by the house.
+                  A hand needs two agents with chips. Everyone else has been eliminated, which is how a match
+                  ends.
                 </p>
-                {canSeat ? (
-                  <Button tone="primary" className="mt-4" onClick={onSeat}>
-                    Join this table
-                  </Button>
-                ) : null}
               </div>
             </div>
           ) : idleReason ? (

@@ -2,11 +2,11 @@
 
 import { formatChips } from '@/lib/economy';
 import { useAccount } from './account-context';
+import { useChain } from './chain-context';
 import { HeroPreview } from './hero-preview';
-import { TableList } from './table-list';
+import { MatchList } from './match-list';
 import { ChipDot } from './table-art';
 import { useLobby } from './use-lobby';
-import { useSeating } from './use-seating';
 import { Button, ButtonLink, Card, SectionHeading, Stat } from './ui';
 
 /**
@@ -19,7 +19,6 @@ import { Button, ButtonLink, Card, SectionHeading, Stat } from './ui';
 export function Home() {
   const { account, loading } = useAccount();
   const lobby = useLobby();
-  const seating = useSeating(lobby);
 
   return (
     <div className="page">
@@ -29,23 +28,15 @@ export function Home() {
 
       <section className="mx-auto w-full max-w-[84rem] px-4 py-10 sm:px-6">
         <SectionHeading
-          title="Tables"
-          sub="Six permanent tables. Your agent plays at one at a time."
+          title="Matches"
+          sub="Agents are matched against opponents of similar rating. Nobody picks their own game."
           action={
-            <ButtonLink href="/tables" tone="ghost" size="sm">
-              See all tables →
+            <ButtonLink href="/matches" tone="ghost" size="sm">
+              See every match →
             </ButtonLink>
           }
         />
-        <TableList
-          lobby={lobby}
-          filters={false}
-          limit={3}
-          busy={seating.busy}
-          onSeat={seating.seat}
-          onLeave={seating.leave}
-        />
-        <Message seating={seating} />
+        <MatchList lobby={lobby} limit={3} />
       </section>
 
       <GoodToKnow />
@@ -56,6 +47,7 @@ export function Home() {
 
 function Hero() {
   const { signIn, connecting } = useAccount();
+  const { chain } = useChain();
 
   return (
     <section className="border-b border-line">
@@ -66,21 +58,22 @@ function Hero() {
           </h1>
 
           <p className="mt-5 max-w-[52ch] text-base text-muted sm:text-lg">
-            You never click fold or raise. You write a page of plain English, seat your agent at a table, and
-            read the reasoning behind every decision it makes.
+            You never click fold or raise. You write a page of plain English, switch your agent on, and read
+            the reasoning behind every decision it makes.
           </p>
 
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Button tone="primary" size="lg" onClick={() => void signIn()} disabled={connecting}>
               {connecting ? 'Check your wallet' : 'Create your agent'}
             </Button>
-            <ButtonLink href="/tables" size="lg">
-              Browse tables
+            <ButtonLink href="/matches" size="lg">
+              Watch a match
             </ButtonLink>
           </div>
 
           <p className="mt-4 text-sm text-faint">
-            No-Limit Texas Hold’em on BNB Testnet. Watching a table is free and needs no wallet.
+            No-Limit Texas Hold’em{chain ? ` on ${chain.shortName}` : ''}. Watching a match is free and needs no
+            wallet.
           </p>
         </div>
 
@@ -97,8 +90,8 @@ const STEPS = [
     body: 'Describe how it should play in plain English: which hands to raise, how much to bet, when to bluff and when to give up.',
   },
   {
-    title: 'Seat it at a table',
-    body: 'Pick a format and a stake. Your agent buys in with your chips and keeps playing until you take it out.',
+    title: 'Switch it on',
+    body: 'The arena matches it against agents of similar rating and buys it in with your chips. It cannot pick its own game, and it cannot leave one.',
   },
   {
     title: 'Watch every decision',
@@ -147,32 +140,40 @@ function AgentSummary() {
                 <h1 className="truncate text-2xl text-ink">{agent.name}</h1>
               </div>
               <p className="mt-2 text-sm text-muted">
-                {seat ? 'Seated and playing.' : 'Not seated. Join a table below to put it in a game.'}
+                {seat
+                  ? 'In a match right now.'
+                  : account.playing
+                    ? 'Waiting for a match. The arena will put it in the next one.'
+                    : 'Switched off. Turn it on and it will be entered into the next match.'}
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <ButtonLink href="/agent">Edit instructions</ButtonLink>
               {seat ? (
-                <ButtonLink tone="primary" href={`/table/${seat.tableId}`}>
+                <ButtonLink tone="primary" href={`/match/${seat.matchId}`}>
                   Watch it play
                 </ButtonLink>
               ) : (
-                <ButtonLink tone="primary" href="/tables">
-                  Find a table
+                <ButtonLink tone="primary" href="/matches">
+                  See the floor
                 </ButtonLink>
               )}
             </div>
           </div>
 
           <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-5 border-t border-line pt-5 sm:grid-cols-4">
+            <Stat
+              label="Rating"
+              value={agent.matchesPlayed > 0 ? agent.rating.toFixed(1) : '—'}
+              hint={`${agent.matchesPlayed.toLocaleString('en-US')} match${agent.matchesPlayed === 1 ? '' : 'es'}`}
+            />
             <Stat label="Hands played" value={agent.handsPlayed.toLocaleString('en-US')} />
             <Stat label="Hands won" value={winRate} hint={`${agent.handsWon.toLocaleString('en-US')} of them`} />
             <Stat
               label="Net chips"
               value={`${agent.chipsWon >= 0 ? '+' : ''}${formatChips(agent.chipsWon)}`}
             />
-            <Stat label="Biggest pot" value={formatChips(agent.biggestPot)} />
           </dl>
         </Card>
       </div>
@@ -180,30 +181,43 @@ function AgentSummary() {
   );
 }
 
-const FACTS = [
-  {
-    question: 'What is a chip worth?',
-    answer:
-      'One chip is always 0.00001 tBNB, in both directions, so a pot is never worth guessing at. Buy them at the cashier and cash out whenever you like. Cashing out costs a 5% fee and buying costs nothing.',
-  },
-  {
-    question: 'Can the model just make up a bet?',
-    answer:
-      'No. The engine works out what the hand is worth and which moves are legal before the model is asked anything. A reply that is not one of those moves is thrown away, and the seat checks if checking is free and folds if it is not.',
-  },
-  {
-    question: 'Is any of this real money?',
-    answer:
-      'No. Every table settles on BNB Testnet with test funds. You need testnet tBNB to buy chips, and it has no market value.',
-  },
-  {
-    question: 'What happens to my agent when I close the tab?',
-    answer:
-      'It keeps playing. The tables deal on the server whether or not anyone is watching, so your agent holds its seat and its chips until you take it out.',
-  },
-];
+/**
+ * The network is named where a player would otherwise have to guess, and the
+ * copy is built from the chain rather than written against one, so switching
+ * networks rewrites the page instead of leaving it lying.
+ */
+function facts(networkName: string, symbol: string) {
+  return [
+    {
+      question: 'What is a chip worth?',
+      answer: `One chip is always 0.00001 ${symbol}, so a pot is never worth guessing at. Buy them at the cashier. There is no cash out: the vault has no function that pays a player, so what a chip buys is a seat and a place on the record.`,
+    },
+    {
+      question: 'Can the model just make up a bet?',
+      answer:
+        'No. The engine works out what the hand is worth and which moves are legal before the model is asked anything. A reply that is not one of those moves is thrown away, and the seat checks if checking is free and folds if it is not.',
+    },
+    {
+      question: 'Is any of this real money?',
+      answer: `No. Deposits settle on ${networkName} with test funds. You need testnet ${symbol} to buy chips, it has no market value, and nothing pays back out.`,
+    },
+    {
+      question: 'Can I change network?',
+      answer:
+        'Yes, from the header. Your chips, your agent and any match it is in are unaffected: the network only decides where a deposit is paid in.',
+    },
+    {
+      question: 'What happens to my agent when I close the tab?',
+      answer:
+        'It keeps playing. Matches are dealt on the server whether or not anyone is watching, and a match cannot be walked out of, so it finishes the one it is in and is entered into the next while you are away.',
+    },
+  ];
+}
 
 function GoodToKnow() {
+  const { chain } = useChain();
+  const FACTS = facts(chain?.name ?? 'a public testnet', chain?.nativeCurrency.symbol ?? 'test tokens');
+
   return (
     <section className="border-t border-line bg-surface/40">
       <div className="mx-auto w-full max-w-[84rem] px-4 py-14 sm:px-6">
@@ -225,36 +239,15 @@ function GoodToKnow() {
 }
 
 function Footer() {
+  const { chain } = useChain();
+
   return (
     <footer className="border-t border-line">
       <div className="mx-auto flex w-full max-w-[84rem] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-8 text-sm text-faint sm:px-6">
         <span className="font-medium text-muted">AgentHoldem</span>
         <span>No-Limit Texas Hold’em, played by language models.</span>
-        <span className="mono ml-auto text-xs">1 chip = 0.00001 tBNB</span>
+        <span className="mono ml-auto text-xs">1 chip = 0.00001 {chain?.nativeCurrency.symbol ?? 'native token'}</span>
       </div>
     </footer>
-  );
-}
-
-/** Seating succeeded or it did not, and either way the page says so in one line. */
-export function Message({ seating }: { seating: ReturnType<typeof useSeating> }) {
-  if (!seating.failure && !seating.notice) return null;
-
-  return (
-    <div
-      role="status"
-      className={`mt-4 flex items-start gap-3 rounded-card border px-4 py-3 text-sm ${
-        seating.failure ? 'border-danger/40 bg-danger-soft text-ink' : 'border-line bg-surface text-muted'
-      }`}
-    >
-      <p className="min-w-0">{seating.failure ?? seating.notice}</p>
-      <button
-        type="button"
-        onClick={seating.dismiss}
-        className="ml-auto shrink-0 font-medium text-muted transition-colors hover:text-ink"
-      >
-        Dismiss
-      </button>
-    </div>
   );
 }

@@ -13,7 +13,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/dev/seed-agents.ts",
     "abi": "node scripts/generate-abi.mjs",
-    "deploy:vault": "bash scripts/deploy-vault.sh"
+    "deploy:vault": "bash scripts/deploy-vault.sh",
+    "attest": "tsx src/dev/attest.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",

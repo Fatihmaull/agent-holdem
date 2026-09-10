@@ -4,20 +4,20 @@ import assert from 'node:assert/strict';
 // runs a query, but that module refuses to load without a connection string.
 import '../dev/test-env';
 import { startHand } from '../poker/engine';
-import { tableById } from '../lib/economy';
-import { TableRuntime, tablePalette } from './table';
+import { MATCH } from '../lib/economy';
+import { MatchRuntime, tablePalette } from './table';
 import type { SeatedAgent } from './store';
 
-const config = tableById('t-03')!;
+const config = MATCH;
 
 /** Chairs 1 and 2 occupied, chair 0 vacated: what a seat change leaves behind. */
 function sparseTable() {
-  const runtime = new TableRuntime(config, {} as never, {} as never);
+  const runtime = new MatchRuntime('m-1', config, {} as never, {} as never, () => {});
   const internals = runtime as unknown as Record<string, unknown>;
 
   const seated: SeatedAgent[] = [
-    { seatIndex: 1, agentId: 'alice', name: 'Alice', color: 'red', instructions: '', stack: 2000 },
-    { seatIndex: 2, agentId: 'bob', name: 'Bob', color: 'green', instructions: '', stack: 2000 },
+    { seatIndex: 1, agentId: 'alice', name: 'Alice', color: 'red', instructions: '', stack: 2000, notesEnabled: true, bustedAtHand: null },
+    { seatIndex: 2, agentId: 'bob', name: 'Bob', color: 'green', instructions: '', stack: 2000, notesEnabled: true, bustedAtHand: null },
   ];
 
   internals.seated = seated;
@@ -67,13 +67,13 @@ test('the dealer button lands on one chair and only one', () => {
 });
 
 test('two agents wearing one colour are told apart at the table', () => {
-  const runtime = new TableRuntime(config, {} as never, {} as never);
+  const runtime = new MatchRuntime('m-1', config, {} as never, {} as never, () => {});
   const internals = runtime as unknown as Record<string, unknown>;
 
   // Past the tenth account, colours are reused. Six of them cannot share a felt.
   internals.seated = [
-    { seatIndex: 0, agentId: 'a', name: 'A', color: 'red', instructions: '', stack: 1 },
-    { seatIndex: 1, agentId: 'b', name: 'B', color: 'red', instructions: '', stack: 1 },
+    { seatIndex: 0, agentId: 'a', name: 'A', color: 'red', instructions: '', stack: 1, notesEnabled: true, bustedAtHand: null },
+    { seatIndex: 1, agentId: 'b', name: 'B', color: 'red', instructions: '', stack: 1, notesEnabled: true, bustedAtHand: null },
   ] satisfies SeatedAgent[];
   internals.palette = tablePalette(internals.seated as SeatedAgent[]);
 
@@ -86,33 +86,55 @@ function nameOf(card: number): string {
   return ranks[(card / 4) | 0] + 'cdhs'[card % 4];
 }
 
-test('a recall during a hand is held rather than paying out a stale stack', async () => {
-  // The seat row still says 2000, because that is what the last stored hand
-  // left there. Paying it out now would refund a buy-in the agent is busy
-  // losing, and the winner keeps the difference: chips from nowhere.
+test('a seat with no chips is not dealt into the next hand', () => {
+  const { runtime } = sparseTable();
+  const internals = runtime as unknown as Record<string, unknown>;
+
+  const seated = internals.seated as SeatedAgent[];
+  seated[0].stack = 0;
+  seated[0].bustedAtHand = 4;
+
+  const alive = (internals.alive as () => SeatedAgent[]).call(runtime);
+  assert.deepEqual(
+    alive.map((seat) => seat.agentId),
+    ['bob'],
+    'an eliminated agent stays on the record but is never dealt to again',
+  );
+});
+
+test('a stack too short to post a big blind is out, whether or not it is marked', () => {
+  // The marker is written after the hand that broke the seat. Between the two,
+  // the stack itself is what says the agent cannot play, so both are checked.
+  const { runtime } = sparseTable();
+  const internals = runtime as unknown as Record<string, unknown>;
+
+  const seated = internals.seated as SeatedAgent[];
+  seated[0].stack = config.bigBlind - 1;
+
+  const alive = (internals.alive as () => SeatedAgent[]).call(runtime);
+  assert.deepEqual(alive.map((seat) => seat.agentId), ['bob']);
+});
+
+test('a match announces itself finished exactly once', () => {
+  // The loop can reach an ending from several directions at once, and settling
+  // twice would return every stack twice.
+  const endings: string[] = [];
+  const runtime = new MatchRuntime('m-1', config, {} as never, {} as never, (_id, ending) => {
+    endings.push(ending);
+  });
+
+  const finish = (runtime as unknown as Record<string, unknown>).finish as (ending: string) => void;
+  finish.call(runtime, 'elimination');
+  finish.call(runtime, 'cap');
+  finish.call(runtime, 'abandoned');
+
+  assert.deepEqual(endings, ['elimination'], 'the first ending is the one that counts');
+});
+
+test('an agent that is not in this match is never treated as being in its hand', () => {
   const { runtime } = sparseTable();
   (runtime as unknown as Record<string, unknown>).handLive = true;
 
-  const outcome = await runtime.requestLeave('alice', 1);
-
-  assert.equal(outcome, 'queued', 'the cash-out waits for the hand to be settled');
   assert.equal(runtime.isInLiveHand('alice'), true);
-});
-
-test('a recall between hands is not held back', () => {
-  // Nothing is holding the chips once the hand is stored, so the cash-out takes
-  // the immediate path instead of the queue.
-  const { runtime } = sparseTable();
-  (runtime as unknown as Record<string, unknown>).handLive = false;
-
-  assert.equal(runtime.isInLiveHand('alice'), false);
-  assert.equal(runtime.isInLiveHand('bob'), false);
-});
-
-test('an agent at another table is never treated as being in this hand', () => {
-  const { runtime } = sparseTable();
-  (runtime as unknown as Record<string, unknown>).handLive = true;
-
-  assert.equal(runtime.isInLiveHand('alice'), true);
-  assert.equal(runtime.isInLiveHand('carol'), false, 'a stranger to this lineup is free to leave');
+  assert.equal(runtime.isInLiveHand('carol'), false, 'a stranger to this lineup is nothing to do with it');
 });

@@ -1,17 +1,17 @@
 import 'dotenv/config';
 import { randomBytes } from 'node:crypto';
-import { eq } from 'drizzle-orm';
 import { db, sql } from '../db/client';
-import { agents, ledgerEntries, seats, users } from '../db/schema';
+import { agents, ledgerEntries, users } from '../db/schema';
 import { OPPONENT_COLORS } from '../agent/colors';
-import { TABLES, tableById } from '../lib/economy';
+import { STARTING_GRANT } from '../lib/economy';
 
 /**
- * Seats throwaway agents so a table can actually deal during development.
+ * Creates throwaway agents so the arena has a field to match during development.
  *
- * These exist only here. The product itself has no house agents: real users
- * play real users, which is the rule this script is careful not to break. It
- * refuses to run against a production database.
+ * It does not seat anybody. Nothing seats anybody any more: these agents queue
+ * like everyone else and the matchmaker puts them into a game, which means a
+ * seeded run exercises exactly the path a real one does. They refuse to be
+ * created against a production database.
  */
 
 const CHARACTERS = [
@@ -52,80 +52,58 @@ async function main(): Promise<void> {
     throw new Error('seed-agents is a development tool and will not run in production');
   }
 
-  const tableId = process.argv[2] ?? TABLES[4].id;
-  const table = tableById(tableId);
-  if (!table) throw new Error(`no such table: ${tableId}. Try one of: ${TABLES.map((t) => t.id).join(', ')}`);
+  const wanted = Math.min(Number(process.argv[2] ?? CHARACTERS.length), CHARACTERS.length);
 
-  const count = Number(process.argv[3] ?? table.seats);
-  const wanted = Math.min(count, table.seats, CHARACTERS.length);
-
-  const existing = await db
-    .select({ seatIndex: seats.seatIndex, color: agents.color, name: agents.name })
-    .from(seats)
-    .innerJoin(agents, eq(agents.id, seats.agentId))
-    .where(eq(seats.tableId, tableId));
-
-  const used = new Set(existing.map((row) => row.seatIndex));
-  const takenColors = new Set(existing.map((row) => row.color));
+  const existing = await db.select({ name: agents.name, color: agents.color }).from(agents);
   const takenNames = new Set(existing.map((row) => row.name));
+  const takenColors = new Set(existing.map((row) => row.color));
 
-  for (let i = 0; i < wanted; i++) {
-    const open = Array.from({ length: table.seats }, (_, index) => index).find((index) => !used.has(index));
-    if (open === undefined) break;
-    used.add(open);
+  let made = 0;
 
-    const character = CHARACTERS.find((entry) => !takenNames.has(`${entry.name} (dev)`));
-    if (!character) break;
-    takenNames.add(`${character.name} (dev)`);
+  for (const character of CHARACTERS) {
+    if (made >= wanted) break;
+
+    const name = `${character.name} (dev)`;
+    if (takenNames.has(name)) continue;
+    takenNames.add(name);
 
     const color = OPPONENT_COLORS.find((entry) => !takenColors.has(entry.id));
     if (!color) break;
     takenColors.add(color.id);
+
     const address = `0x${randomBytes(20).toString('hex')}`;
-    const startingChips = table.buyIn * 4;
 
     await db.transaction(async (tx) => {
-      const [user] = await tx.insert(users).values({ address, chips: startingChips }).returning({ id: users.id });
+      const [user] = await tx
+        .insert(users)
+        .values({ address, chips: STARTING_GRANT })
+        .returning({ id: users.id });
 
       await tx.insert(ledgerEntries).values({
         userId: user.id,
-        delta: startingChips,
-        balanceAfter: startingChips,
-        reason: 'adjustment',
+        delta: STARTING_GRANT,
+        balanceAfter: STARTING_GRANT,
+        reason: 'grant',
         reference: 'dev-seed',
       });
 
-      const [agent] = await tx
-        .insert(agents)
-        .values({
-          userId: user.id,
-          name: `${character.name} (dev)`,
-          color: color.id,
-          instructions: character.instructions,
-        })
-        .returning({ id: agents.id });
-
-      await tx
-        .update(users)
-        .set({ chips: startingChips - table.buyIn })
-        .where(eq(users.id, user.id));
-
-      await tx.insert(ledgerEntries).values({
+      await tx.insert(agents).values({
         userId: user.id,
-        delta: -table.buyIn,
-        balanceAfter: startingChips - table.buyIn,
-        reason: 'table-buy-in',
-        reference: `${tableId}:${open}`,
+        name,
+        color: color.id,
+        instructions: character.instructions,
+        // Alternating, so a seeded field carries both arms of the notes
+        // experiment rather than being all one and proving nothing.
+        notesEnabled: made % 2 === 0,
       });
-
-      await tx.insert(seats).values({ tableId, seatIndex: open, agentId: agent.id, stack: table.buyIn });
     });
 
-    console.log(`seated ${character.name} (dev) at ${tableId} seat ${open}`);
+    console.log(`created ${name}`);
+    made += 1;
   }
 
   await sql.end();
-  console.log(`\nRestart the dev server, or wait a few seconds, and ${tableId} will start dealing.`);
+  console.log(`\n${made} agent(s) queued. The matchmaker opens a match as soon as two are waiting.`);
 }
 
 main().catch((error) => {

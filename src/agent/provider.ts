@@ -4,6 +4,8 @@
  * user-facing runs on a paid key.
  */
 
+import { NOTE_SYSTEM_PROMPT } from './prompt';
+
 export interface ModelRequest {
   system: string;
   user: string;
@@ -106,6 +108,9 @@ export class ScriptedProvider implements ModelProvider {
 
   constructor(private readonly reply: string | (() => Promise<string>)) {}
 
+  // Reached only through the ModelProvider interface, so static analysis sees
+  // no direct caller. It is the contract, not a spare method.
+  // fallow-ignore-next-line unused-class-member
   async *stream(_request: ModelRequest, _apiKey: string, signal: AbortSignal): AsyncIterable<string> {
     const text = typeof this.reply === 'string' ? this.reply : await this.reply();
     for (const word of text.split(/(?<=\s)/)) {
@@ -128,6 +133,14 @@ class HeuristicProvider implements ModelProvider {
   readonly name = 'heuristic';
 
   async *stream(request: ModelRequest, _apiKey: string, signal: AbortSignal): AsyncIterable<string> {
+    // One method serves two prompts, so the system prompt is what says which
+    // question was asked. Without this branch the loop still deals hands, but
+    // notes are never written, which leaves a whole subsystem untested by a run
+    // that looks fine.
+    if (request.system === NOTE_SYSTEM_PROMPT) {
+      yield* this.emit(notesFrom(request.user), signal);
+      return;
+    }
     const prompt = request.user;
     const equity = Number(/equity: ([\d.]+)%/.exec(prompt)?.[1] ?? '50') / 100;
     const call = Number(/- call (\d+)/.exec(prompt)?.[1] ?? 'NaN');
@@ -139,7 +152,7 @@ class HeuristicProvider implements ModelProvider {
     const strong = equity > 0.66;
     const playable = equity > breakEven + 0.04;
 
-    let reply: { action: string; to?: number };
+    let reply: { action: string; to?: number; remember?: boolean };
     let reasoning: string;
 
     if (strong && (raise || bet)) {
@@ -160,13 +173,53 @@ class HeuristicProvider implements ModelProvider {
       reasoning = `Not enough equity to pay for this one at ${(equity * 100).toFixed(0)}%.`;
     }
 
-    for (const word of `${reasoning} ${JSON.stringify(reply)}`.split(/(?<=\s)/)) {
+    // Folding to a bet is the spot a real agent most often wants to look back
+    // at, and it is frequent enough that a short development run actually
+    // exercises the note-writing path instead of leaving it dark.
+    if (reply.action === 'fold') reply.remember = true;
+
+    yield* this.emit(`${reasoning} ${JSON.stringify(reply)}`, signal);
+  }
+
+  /** Word at a time, so the streaming path is exercised rather than bypassed. */
+  private async *emit(text: string, signal: AbortSignal): AsyncIterable<string> {
+    for (const word of text.split(/(?<=\s)/)) {
       if (signal.aborted) throw new ProviderError('aborted');
       await new Promise((resolve) => setTimeout(resolve, 45));
       yield word;
     }
   }
 }
+
+/**
+ * A note per opponent, counting what they did in the hand just played.
+ *
+ * Deliberately mechanical. The point is to move a real note through the write,
+ * the revision count and the read-back, not to imitate a read: a note that says
+ * the same thing every hand would never revise, and revising is the half of the
+ * feature most likely to be broken.
+ */
+function notesFrom(prompt: string): string {
+  const section = prompt.split('YOUR CURRENT NOTES')[1]?.split('\n\n')[0] ?? '';
+  const hand = prompt.split('HAND')[1]?.split('\n\n')[0] ?? '';
+
+  const notes: Record<string, string> = {};
+  for (const line of section.split('\n')) {
+    const name = /^- (.+?): /.exec(line)?.[1];
+    if (!name) continue;
+
+    const beats = hand.split('\n').filter((beat) => beat.includes(name));
+    const aggressive = beats.filter((beat) => /\b(bets?|raises?)\b/i.test(beat)).length;
+    const folded = beats.some((beat) => /\bfolds?\b/i.test(beat));
+
+    notes[name] = folded && aggressive === 0
+      ? 'Folded without putting money in. Nothing shown yet.'
+      : `Put in ${aggressive} bet or raise this hand. Reweight when that stops holding.`;
+  }
+
+  return JSON.stringify(notes);
+}
+
 
 export function createProvider(): ModelProvider {
   const name = process.env.AGENT_PROVIDER ?? 'gemini';

@@ -11,6 +11,14 @@ export function intentToBytes32(uuid: string): `0x${string}` {
 }
 
 export function bytes32ToIntent(value: string): string {
-  const hex = value.slice(2, 34);
+  // Checked rather than assumed. Anyone can call the vault with a bytes32 of
+  // their choosing, and the result of this goes straight into a lookup on a
+  // uuid column: a value that is not one belongs in a refusal, not in an error
+  // from the database.
+  if (!/^0x[0-9a-fA-F]{64}$/.test(value)) throw new Error(`not a bytes32: ${value}`);
+
+  const hex = value.slice(2, 34).toLowerCase();
+  if (!/^0*$/.test(value.slice(34))) throw new Error(`not an intent identifier: ${value}`);
+
   return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32)].join('-');
 }

@@ -14,7 +14,10 @@ contract ChipVaultTest is Test {
     uint256 internal constant MIN_DEPOSIT = 0.01 ether;
 
     event Deposited(address indexed payer, bytes32 indexed intentId, uint256 amount);
-    event PaidOut(address indexed recipient, bytes32 indexed redemptionId, uint256 amount);
+
+    /// The signature this vault used to carry, kept only so the test below can
+    /// prove it is gone.
+    bytes4 internal constant OLD_PAYOUT = bytes4(keccak256("payout(address,uint256,bytes32)"));
 
     function setUp() public {
         vault = new ChipVault(operator, MIN_DEPOSIT);
@@ -67,57 +70,57 @@ contract ChipVaultTest is Test {
         assertFalse(ok);
     }
 
-    function test_PayoutSendsNetAmountOnce() public {
+    /// Chips are one-way, and this is where that stops being a promise.
+    ///
+    /// There is no player withdrawal function to call, so the check is that the
+    /// selector finds nothing: with no matching function and no fallback, the
+    /// call reverts whoever sends it. The operator is included on purpose,
+    /// because "the operator chooses not to" is a policy and this is meant to be
+    /// a property.
+    function test_NoPayoutPathExists() public {
         vm.prank(alice);
         vault.deposit{value: 1 ether}(keccak256("intent-1"));
 
-        bytes32 redemption = keccak256("redemption-1");
-        uint256 before = alice.balance;
+        bytes memory call = abi.encodeWithSelector(OLD_PAYOUT, alice, 0.95 ether, keccak256("redemption-1"));
 
-        vm.expectEmit(true, true, false, true);
-        emit PaidOut(alice, redemption, 0.95 ether);
-
-        vm.prank(operator);
-        vault.payout(alice, 0.95 ether, redemption);
-
-        assertEq(alice.balance, before + 0.95 ether);
-        assertEq(address(vault).balance, 0.05 ether);
+        vm.prank(alice);
+        (bool byPlayer,) = address(vault).call(call);
+        assertFalse(byPlayer);
 
         vm.prank(operator);
-        vm.expectRevert(abi.encodeWithSelector(ChipVault.RedemptionAlreadyPaid.selector, redemption));
-        vault.payout(alice, 0.95 ether, redemption);
+        (bool byOperator,) = address(vault).call(call);
+        assertFalse(byOperator);
+
+        assertEq(address(vault).balance, 1 ether);
     }
 
-    function test_PayoutOnlyOwner() public {
+    function test_SweepMovesFundsToOperator() public {
         vm.prank(alice);
         vault.deposit{value: 1 ether}(keccak256("intent-1"));
-
-        vm.prank(alice);
-        vm.expectRevert(ChipVault.NotOwner.selector);
-        vault.payout(alice, 0.5 ether, keccak256("redemption-1"));
-    }
-
-    function test_PayoutRejectsOverBalance() public {
-        vm.prank(alice);
-        vault.deposit{value: 1 ether}(keccak256("intent-1"));
-
-        vm.prank(operator);
-        vm.expectRevert(abi.encodeWithSelector(ChipVault.InsufficientBalance.selector, 2 ether, 1 ether));
-        vault.payout(alice, 2 ether, keccak256("redemption-1"));
-    }
-
-    function test_SweepMovesFees() public {
-        vm.prank(alice);
-        vault.deposit{value: 1 ether}(keccak256("intent-1"));
-
-        vm.prank(operator);
-        vault.payout(alice, 0.95 ether, keccak256("redemption-1"));
 
         vm.prank(operator);
         vault.sweep(operator, 0.05 ether);
 
         assertEq(operator.balance, 0.05 ether);
-        assertEq(address(vault).balance, 0);
+        assertEq(address(vault).balance, 0.95 ether);
+    }
+
+    function test_SweepOnlyOwner() public {
+        vm.prank(alice);
+        vault.deposit{value: 1 ether}(keccak256("intent-1"));
+
+        vm.prank(alice);
+        vm.expectRevert(ChipVault.NotOwner.selector);
+        vault.sweep(alice, 0.5 ether);
+    }
+
+    function test_SweepRejectsOverBalance() public {
+        vm.prank(alice);
+        vault.deposit{value: 1 ether}(keccak256("intent-1"));
+
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(ChipVault.InsufficientBalance.selector, 2 ether, 1 ether));
+        vault.sweep(operator, 2 ether);
     }
 
     function test_FundAcceptsTopUp() public {

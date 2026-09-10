@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { LegalActions } from '../poker/engine';
-import { defaultAction, extractJson, validateDecision } from './decision';
+import {
+  MAX_NOTE,
+  defaultAction,
+  extractJson,
+  validateDecision,
+  validateNotes,
+} from './decision';
 import { ModelQueue } from './queue';
 import { RateLimited } from './provider';
 
@@ -181,4 +187,43 @@ test('a rate limit on every attempt surfaces to the caller', async () => {
     }),
     RateLimited,
   );
+});
+
+test('remember is only set by a literal true', () => {
+  const ask = (remember: unknown) =>
+    validateDecision({ action: 'check', remember }, { ...facingBet, fold: false, check: true, call: null })?.remember;
+
+  assert.equal(ask(true), true);
+  assert.equal(ask('true'), false);
+  assert.equal(ask(1), false);
+  assert.equal(ask(undefined), false);
+});
+
+test('a note about somebody who was not at the table is dropped', () => {
+  const updates = validateNotes({ Alice: 'bluffs the river', Mallory: 'never played them' }, ['Alice', 'Bob']);
+
+  assert.deepEqual(updates, [{ name: 'Alice', text: 'bluffs the river' }]);
+});
+
+test('a note keeps the spelling the table uses, not the one the model sent', () => {
+  const updates = validateNotes({ '  aLiCe ': 'calls too wide' }, ['Alice']);
+
+  assert.deepEqual(updates, [{ name: 'Alice', text: 'calls too wide' }]);
+});
+
+test('an empty note survives, because erasing a read is a decision', () => {
+  assert.deepEqual(validateNotes({ Alice: '' }, ['Alice']), [{ name: 'Alice', text: '' }]);
+});
+
+test('a note is cut to what the arena will store', () => {
+  // The column has a limit and the prompt states one. A model that ignores it
+  // gets trimmed rather than having its whole note rejected, because the first
+  // few hundred characters are usually the read and the rest is padding.
+  const [update] = validateNotes({ Alice: 'x'.repeat(MAX_NOTE * 3) }, ['Alice']);
+
+  assert.equal(update.text.length, MAX_NOTE);
+});
+
+test('a note about itself is dropped, since it was never an opponent', () => {
+  assert.deepEqual(validateNotes({ Alice: 'I played well' }, ['Bob']), []);
 });

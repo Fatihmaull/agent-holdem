@@ -1,9 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { formatChips } from '@/lib/economy';
+import { BUY_IN, SEAT_COST, formatChips } from '@/lib/economy';
 import { useAccount } from './account-context';
 import { ChipDot } from './table-art';
+import { AxesCard } from './axes-card';
 import { Badge, Button, ButtonLink, Card, Stat } from './ui';
 
 const MAX_INSTRUCTIONS = 2000;
@@ -27,7 +28,7 @@ const EXAMPLES = [
   },
 ];
 
-/** A settings page. One field decides everything the agent does at every table. */
+/** A settings page. One field decides everything the agent does in every match. */
 export function AgentEditor() {
   const { account, loading, signIn, connecting, refresh } = useAccount();
   // Null means "not edited yet", so the saved value shows without ever being
@@ -37,6 +38,7 @@ export function AgentEditor() {
   const [status, setStatus] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [switching, setSwitching] = useState(false);
 
   if (loading) {
     return (
@@ -61,8 +63,8 @@ export function AgentEditor() {
             <Button tone="primary" size="lg" onClick={() => void signIn()} disabled={connecting}>
               {connecting ? 'Check your wallet' : 'Connect wallet'}
             </Button>
-            <ButtonLink href="/tables" size="lg">
-              Watch a table first
+            <ButtonLink href="/matches" size="lg">
+              Watch a match first
             </ButtonLink>
           </div>
         </Card>
@@ -71,6 +73,7 @@ export function AgentEditor() {
   }
 
   const { agent, seat } = account;
+  const affordable = account.chips >= SEAT_COST;
   const name = draftName ?? agent.name;
   const instructions = draftInstructions ?? agent.instructions;
   const dirty = name !== agent.name || instructions !== agent.instructions;
@@ -99,20 +102,39 @@ export function AgentEditor() {
     }
   }
 
+  async function setPlaying(playing: boolean) {
+    setSwitching(true);
+    setFailure(null);
+    try {
+      const response = await fetch('/api/agent/playing', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ playing }),
+      });
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(body.error ?? 'Could not change that.');
+      await refresh();
+    } catch (error) {
+      setFailure(error instanceof Error ? error.message : 'Could not change that.');
+    } finally {
+      setSwitching(false);
+    }
+  }
+
   return (
     <Shell>
       <header className="mb-6 flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
         <div>
           <h1 className="text-2xl text-ink sm:text-3xl">Your agent</h1>
           <p className="mt-1.5 text-sm text-muted">
-            Everything below applies at every table, on the next hand after you save.
+            Everything below applies in every match, on the next hand after you save.
           </p>
         </div>
         {seat ? (
-          <ButtonLink href={`/table/${seat.tableId}`}>Watch it play</ButtonLink>
+          <ButtonLink href={`/match/${seat.matchId}`}>Watch it play</ButtonLink>
         ) : (
-          <ButtonLink tone="primary" href="/tables">
-            Find a table
+          <ButtonLink tone="primary" href="/matches">
+            See what is running
           </ButtonLink>
         )}
       </header>
@@ -188,29 +210,49 @@ export function AgentEditor() {
 
         <aside className="space-y-5">
           <Card className="p-5">
-            <h2 className="text-base text-ink">Where it is</h2>
+            <h2 className="text-base text-ink">Playing</h2>
             <div className="mt-3">
               {seat ? (
                 <>
-                  <Badge tone="accent">Seated</Badge>
+                  <Badge tone="accent">In a match</Badge>
                   <p className="mt-3 text-sm text-muted">
-                    Playing with {formatChips(seat.stack)} chips in front of it.
+                    Playing with {formatChips(seat.stack)} chips in front of it. A match cannot be walked out
+                    of, so switching off here takes effect once this one ends.
                   </p>
-                  <ButtonLink href={`/table/${seat.tableId}`} className="mt-3 w-full">
-                    Open the table
+                  <ButtonLink href={`/match/${seat.matchId}`} className="mt-3 w-full">
+                    Open the match
                   </ButtonLink>
+                </>
+              ) : account.playing ? (
+                <>
+                  <Badge tone="accent">Queued</Badge>
+                  <p className="mt-3 text-sm text-muted">
+                    Waiting for opponents of a similar rating. The arena picks them; your agent never does.
+                  </p>
                 </>
               ) : (
                 <>
-                  <Badge>Not seated</Badge>
+                  <Badge>Switched off</Badge>
                   <p className="mt-3 text-sm text-muted">
-                    It plays nothing until you put it at a table. It can hold one seat at a time.
+                    It queues for nothing until you switch it on.
                   </p>
-                  <ButtonLink tone="primary" href="/tables" className="mt-3 w-full">
-                    Browse tables
-                  </ButtonLink>
                 </>
               )}
+
+              <Button
+                tone={account.playing ? undefined : 'primary'}
+                className="mt-3 w-full"
+                onClick={() => void setPlaying(!account.playing)}
+                disabled={switching || (!account.playing && !affordable)}
+              >
+                {switching ? 'Saving…' : account.playing ? 'Switch off' : 'Switch on'}
+              </Button>
+
+              <p className="mt-2 text-xs text-faint">
+                {!account.playing && !affordable
+                  ? `A seat costs ${formatChips(SEAT_COST)} chips, buy-in and entry fee together. Buy some at the cashier first.`
+                  : `Each match costs ${formatChips(SEAT_COST)} chips: ${formatChips(BUY_IN)} of it goes in front of your agent and comes back with whatever it finished on.`}
+              </p>
             </div>
           </Card>
 
@@ -223,6 +265,8 @@ export function AgentEditor() {
               <Stat label="Biggest pot" value={formatChips(agent.biggestPot)} />
             </dl>
           </Card>
+
+          <AxesCard agentId={agent.id} />
         </aside>
       </div>
     </Shell>

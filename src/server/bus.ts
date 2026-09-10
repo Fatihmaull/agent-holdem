@@ -14,6 +14,9 @@ type Listener = (event: ArenaEvent) => void;
 export class TableBus {
   private readonly listeners = new Set<Listener>();
 
+  // Called as `runtime.bus.subscribe` from the SSE route, which static analysis
+  // does not follow through the field.
+  // fallow-ignore-next-line unused-class-member
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => {

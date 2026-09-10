@@ -118,55 +118,6 @@ export function Stat({
 }
 
 /**
- * A segmented control. Used for lobby filters and for the panel tabs on the
- * watch page, because both are "pick exactly one of a short list".
- */
-export function SegmentedControl<T extends string>({
-  options,
-  value,
-  onChange,
-  label,
-  className = '',
-}: {
-  options: Array<{ value: T; label: string; count?: number }>;
-  value: T;
-  onChange: (next: T) => void;
-  label: string;
-  className?: string;
-}) {
-  return (
-    <div
-      role="tablist"
-      aria-label={label}
-      className={`scroll-x flex max-w-full items-center gap-0.5 rounded-control border border-line bg-surface p-0.5 ${className}`}
-    >
-      {options.map((option) => {
-        const active = option.value === value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(option.value)}
-            className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[0.375rem] px-3 text-[0.8125rem] font-medium whitespace-nowrap transition-colors ${
-              active ? 'bg-surface-3 text-ink' : 'text-muted hover:text-ink'
-            }`}
-          >
-            {option.label}
-            {option.count !== undefined ? (
-              <span className={`mono text-[0.6875rem] tabular-nums ${active ? 'text-muted' : 'text-faint'}`}>
-                {option.count}
-              </span>
-            ) : null}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-/**
  * An empty screen is an invitation to act, so it always carries the action that
  * fills it rather than only reporting that there is nothing here.
  */

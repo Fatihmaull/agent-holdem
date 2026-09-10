@@ -1,12 +1,14 @@
-import { and, eq, isNotNull, sql as raw } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql as raw } from 'drizzle-orm';
 import { db } from '../db/client';
-import { agents, depositIntents, ledgerEntries, redemptions, seats, users } from '../db/schema';
-import { chipsToWei, packageById, quoteRedemption, tableById, weiToChips } from '../lib/economy';
-import { PayoutUncertain, REQUIRED_CONFIRMATIONS, observeDeposit, payOut, vaultAddress } from './chain';
+import { agents, depositIntents, ledgerEntries, seats, users } from '../db/schema';
+import { conservative } from '../lib/rating';
+import { chipsToWei, packageById, weiToChips } from '../lib/economy';
+import { chainById } from '../lib/chains';
+import { REQUIRED_CONFIRMATIONS, observeDeposit } from './chain';
+import { UnknownChain, requireChain, vaultAddress, type DeployedChain } from './chains';
 import { bytes32ToIntent, intentToBytes32 } from '../lib/intent';
 import type { Session } from './auth';
-import { tableRuntime } from './registry';
-import { leaveSeat } from './store';
+import { setSeeking } from './store';
 
 export class ActionError extends Error {}
 
@@ -22,8 +24,14 @@ export interface Account {
     handsWon: number;
     chipsWon: number;
     biggestPot: number;
+    /** The published rating, which is what the standings sort on. */
+    rating: number;
+    matchesPlayed: number;
   };
-  seat: { tableId: string; seatIndex: number; stack: number } | null;
+  /** The match it is sitting in right now, or null while it waits for one. */
+  seat: { matchId: string; seatIndex: number; stack: number } | null;
+  /** Whether its owner has it switched on. Off means it queues for nothing. */
+  playing: boolean;
 }
 
 export async function account(session: Session): Promise<Account> {
@@ -39,6 +47,10 @@ export async function account(session: Session): Promise<Account> {
       handsWon: agents.handsWon,
       chipsWon: agents.chipsWon,
       biggestPot: agents.biggestPot,
+      seeking: agents.seeking,
+      ratingMu: agents.ratingMu,
+      ratingSigma: agents.ratingSigma,
+      matchesPlayed: agents.matchesPlayed,
     })
     .from(users)
     .innerJoin(agents, eq(agents.userId, users.id))
@@ -48,7 +60,7 @@ export async function account(session: Session): Promise<Account> {
   if (!row) throw new ActionError('That account no longer exists.');
 
   const [seat] = await db
-    .select({ tableId: seats.tableId, seatIndex: seats.seatIndex, stack: seats.stack })
+    .select({ matchId: seats.matchId, seatIndex: seats.seatIndex, stack: seats.stack })
     .from(seats)
     .where(eq(seats.agentId, row.agentId))
     .limit(1);
@@ -65,9 +77,27 @@ export async function account(session: Session): Promise<Account> {
       handsWon: row.handsWon,
       chipsWon: row.chipsWon,
       biggestPot: row.biggestPot,
+      rating: conservative({ mu: row.ratingMu, sigma: row.ratingSigma }),
+      matchesPlayed: row.matchesPlayed,
     },
     seat: seat ?? null,
+    playing: row.seeking,
   };
+}
+
+/**
+ * Switches an agent on or off.
+ *
+ * The only lever an owner has over where their agent plays, now that the arena
+ * decides that. Off means it stops queueing once its current match ends: a
+ * match cannot be walked out of, so this never interrupts one in progress.
+ */
+export async function setPlaying(session: Session, playing: boolean): Promise<{ playing: boolean }> {
+  const [agent] = await db.select({ id: agents.id }).from(agents).where(eq(agents.userId, session.userId)).limit(1);
+  if (!agent) throw new ActionError('That account has no agent.');
+
+  await setSeeking(agent.id, playing);
+  return { playing };
 }
 
 const MAX_NAME = 24;
@@ -84,83 +114,19 @@ export async function saveAgent(session: Session, input: { name: string; instruc
 }
 
 /**
- * Seats an agent, moving the buy-in from the account balance to the seat.
- * The debit and the seat are one transaction, so chips can never exist in both
- * places or in neither.
- */
-export async function joinTable(session: Session, tableId: string): Promise<{ seatIndex: number }> {
-  const table = tableById(tableId);
-  if (!table) throw new ActionError('That table does not exist.');
-
-  const seatIndex = await db.transaction(async (tx) => {
-    const [agent] = await tx
-      .select({ id: agents.id })
-      .from(agents)
-      .where(eq(agents.userId, session.userId))
-      .limit(1);
-    if (!agent) throw new ActionError('That account has no agent.');
-
-    const [alreadySeated] = await tx.select({ id: seats.id }).from(seats).where(eq(seats.agentId, agent.id)).limit(1);
-    if (alreadySeated) throw new ActionError('Your agent is already at a table. Take it off that one first.');
-
-    const taken = await tx.select({ seatIndex: seats.seatIndex }).from(seats).where(eq(seats.tableId, tableId));
-    const used = new Set(taken.map((row) => row.seatIndex));
-    const open = Array.from({ length: table.seats }, (_, i) => i).find((i) => !used.has(i));
-    if (open === undefined) throw new ActionError('That table is full.');
-
-    const [debited] = await tx
-      .update(users)
-      .set({ chips: raw`${users.chips} - ${table.buyIn}` })
-      .where(and(eq(users.id, session.userId), raw`${users.chips} >= ${table.buyIn}`))
-      .returning({ chips: users.chips });
-
-    if (!debited) throw new ActionError('Not enough chips for that buy-in. Visit the cashier.');
-
-    await tx.insert(ledgerEntries).values({
-      userId: session.userId,
-      delta: -table.buyIn,
-      balanceAfter: debited.chips,
-      reason: 'table-buy-in',
-      reference: `${tableId}:${open}`,
-    });
-
-    await tx.insert(seats).values({ tableId, seatIndex: open, agentId: agent.id, stack: table.buyIn });
-    return open;
-  });
-
-  await tableRuntime(tableId)?.refreshSeats();
-  return { seatIndex };
-}
-
-/**
- * Takes an agent off its table and returns the stack it is actually holding.
+ * The chain a request asked to settle on.
  *
- * The seat row carries the stack as it stood when the last hand was stored, so
- * paying it out while a hand is running would refund a buy-in the agent is
- * busy losing and mint the difference. A request that lands mid-hand is
- * therefore held by the table and settled the moment the hand is on record.
+ * Every money path resolves the key itself rather than accepting a chain object
+ * from the caller, so an unknown or disabled network fails as a bad request
+ * instead of reaching the chain layer.
  */
-export async function leaveTable(session: Session): Promise<{ pending: boolean }> {
-  const [agent] = await db.select({ id: agents.id }).from(agents).where(eq(agents.userId, session.userId)).limit(1);
-  if (!agent) throw new ActionError('That account has no agent.');
-
-  const [seat] = await db
-    .select({ tableId: seats.tableId, seatIndex: seats.seatIndex })
-    .from(seats)
-    .where(eq(seats.agentId, agent.id))
-    .limit(1);
-  if (!seat) return { pending: false };
-
-  const runtime = tableRuntime(seat.tableId);
-  if (!runtime) {
-    // No table is running this id, so nothing can be mid-hand and the stack on
-    // the row is final.
-    await leaveSeat(seat.tableId, seat.seatIndex);
-    return { pending: false };
+function chainFor(key: string): DeployedChain {
+  try {
+    return requireChain(key);
+  } catch (error) {
+    if (error instanceof UnknownChain) throw new ActionError(error.message);
+    throw error;
   }
-
-  const outcome = await runtime.requestLeave(agent.id, seat.seatIndex);
-  return { pending: outcome === 'queued' };
 }
 
 export interface DepositQuote {
@@ -169,17 +135,31 @@ export interface DepositQuote {
   chips: number;
   valueWei: string;
   vault: `0x${string}`;
+  chainKey: string;
+  chainId: number;
 }
 
-export async function startDeposit(session: Session, packageId: string): Promise<DepositQuote> {
+export async function startDeposit(session: Session, packageId: string, chainKey: string): Promise<DepositQuote> {
   const chosen = packageById(packageId);
   if (!chosen) throw new ActionError('That package does not exist.');
+
+  const chain = chainFor(chainKey);
+
+  // Resolved before the row is written. An intent against a chain with no vault
+  // is an intent the player can never pay, so it is refused rather than stored.
+  let vault: `0x${string}`;
+  try {
+    vault = vaultAddress(chain);
+  } catch {
+    throw new ActionError(`Chips cannot be bought on ${chain.name} yet. Switch networks to buy in.`);
+  }
 
   const valueWei = chipsToWei(chosen.chips);
   const [intent] = await db
     .insert(depositIntents)
     .values({
       userId: session.userId,
+      chainId: chain.id,
       packageId: chosen.id,
       chips: chosen.chips,
       expectedWei: valueWei.toString(),
@@ -191,7 +171,9 @@ export async function startDeposit(session: Session, packageId: string): Promise
     bytes32: intentToBytes32(intent.id),
     chips: chosen.chips,
     valueWei: valueWei.toString(),
-    vault: vaultAddress(),
+    vault,
+    chainKey: chain.key,
+    chainId: chain.id,
   };
 }
 
@@ -210,23 +192,38 @@ export interface DepositResult {
  */
 export async function noteDepositTx(session: Session, intentId: string, txHash: string): Promise<void> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) throw new ActionError('That is not a transaction hash.');
+  if (!/^[0-9a-f-]{36}$/i.test(intentId)) throw new ActionError('That is not a deposit.');
 
-  await db
-    .update(depositIntents)
-    .set({ txHash })
-    .where(
-      and(
-        eq(depositIntents.id, intentId),
-        eq(depositIntents.userId, session.userId),
-        eq(depositIntents.status, 'pending'),
-      ),
-    );
+  try {
+    await db
+      .update(depositIntents)
+      .set({ txHash })
+      .where(
+        and(
+          eq(depositIntents.id, intentId),
+          eq(depositIntents.userId, session.userId),
+          eq(depositIntents.status, 'pending'),
+        ),
+      );
+  } catch {
+    // A hash is unique per chain, so writing one that is already on another
+    // intent fails here. That is a client repeating itself, not a fault: the
+    // hash is already on record against the intent that actually paid it, and
+    // that is the row confirmation will find.
+  }
 }
 
-/** Deposits this account has paid for but not yet had credited. */
-export async function unsettledDeposits(session: Session): Promise<Array<{ intentId: string; txHash: string }>> {
+/**
+ * Deposits this account has paid for but not yet had credited.
+ *
+ * The chain comes back with each one. A player who bought on one network and
+ * returned on another must still be finished on the network they paid.
+ */
+export async function unsettledDeposits(
+  session: Session,
+): Promise<Array<{ intentId: string; txHash: string; chainKey: string }>> {
   const rows = await db
-    .select({ intentId: depositIntents.id, txHash: depositIntents.txHash })
+    .select({ intentId: depositIntents.id, txHash: depositIntents.txHash, chainId: depositIntents.chainId })
     .from(depositIntents)
     .where(
       and(
@@ -237,7 +234,9 @@ export async function unsettledDeposits(session: Session): Promise<Array<{ inten
     )
     .orderBy(depositIntents.createdAt);
 
-  return rows.map((row) => ({ intentId: row.intentId, txHash: row.txHash! }));
+  return rows
+    .map((row) => ({ intentId: row.intentId, txHash: row.txHash!, chainKey: chainById(row.chainId)?.key }))
+    .filter((row): row is { intentId: string; txHash: string; chainKey: string } => row.chainKey !== undefined);
 }
 
 /**
@@ -249,24 +248,58 @@ export async function unsettledDeposits(session: Session): Promise<Array<{ inten
  * confirmations. The intent row is locked for the length of the transaction and
  * the credit only applies to a row that is still pending, so two requests
  * racing on the same hash cannot both pay out.
+ *
+ * A transaction may carry more than one deposit, so the first one still owed to
+ * this account is the one credited. Calling again finishes the next, which is
+ * how a client that made several in one call gets all of them.
  */
-export async function confirmDeposit(session: Session, txHash: string): Promise<DepositResult> {
+export async function confirmDeposit(session: Session, txHash: string, chainKey: string): Promise<DepositResult> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) throw new ActionError('That is not a transaction hash.');
 
-  const observed = await observeDeposit(txHash as `0x${string}`);
-  if (!observed) throw new ActionError('No deposit to this vault was found in that transaction.');
+  const chain = chainFor(chainKey);
 
-  if (observed.confirmations < REQUIRED_CONFIRMATIONS) {
+  const deposits = await observeDeposit(chain, txHash as `0x${string}`);
+  if (deposits.length === 0) {
+    throw new ActionError(`No deposit to the ${chain.shortName} vault was found in that transaction.`);
+  }
+
+  if (deposits[0].confirmations < REQUIRED_CONFIRMATIONS) {
     throw new ActionError(
-      `Waiting for confirmations (${observed.confirmations} of ${REQUIRED_CONFIRMATIONS}). Try again shortly.`,
+      `Waiting for confirmations (${deposits[0].confirmations} of ${REQUIRED_CONFIRMATIONS}). Try again shortly.`,
     );
   }
 
-  if (observed.payer.toLowerCase() !== session.address.toLowerCase()) {
-    throw new ActionError('That deposit was sent from a different wallet.');
-  }
+  const mine = deposits.filter((row) => row.payer.toLowerCase() === session.address.toLowerCase());
+  if (mine.length === 0) throw new ActionError('That deposit was sent from a different wallet.');
 
-  const intentId = bytes32ToIntent(observed.intentId);
+  // An identifier the vault accepted need not be one of ours: anyone can call
+  // deposit with a bytes32 of their own invention. One that does not decode is
+  // simply not a deposit this arena issued.
+  const candidates = mine.flatMap((row) => {
+    try {
+      return [{ ...row, intentId: bytes32ToIntent(row.intentId) }];
+    } catch {
+      return [];
+    }
+  });
+  if (candidates.length === 0) throw new ActionError('That deposit does not match any request from this account.');
+
+  const pending = await db
+    .select({ id: depositIntents.id })
+    .from(depositIntents)
+    .where(
+      and(
+        eq(depositIntents.userId, session.userId),
+        eq(depositIntents.status, 'pending'),
+        inArray(
+          depositIntents.id,
+          candidates.map((row) => row.intentId),
+        ),
+      ),
+    );
+
+  const observed = candidates.find((row) => pending.some((intent) => intent.id === row.intentId)) ?? candidates[0];
+  const intentId = observed.intentId;
 
   return db.transaction(async (tx) => {
     // Locked for the length of the transaction. A second request for the same
@@ -281,6 +314,14 @@ export async function confirmDeposit(session: Session, txHash: string): Promise<
 
     if (!intent) throw new ActionError('That deposit does not match any request from this account.');
     if (intent.status === 'credited') throw new ActionError('That deposit has already been credited.');
+
+    // The vault check above proves the log came from a vault of ours; this
+    // proves it came from the one the intent was issued against. Without it an
+    // intent could be paid on a cheaper chain than the one it was priced on.
+    if (intent.chainId !== chain.id) {
+      const paid = chainById(intent.chainId);
+      throw new ActionError(`That deposit belongs to ${paid?.name ?? `chain ${intent.chainId}`}. Switch networks to finish it.`);
+    }
 
     if (observed.amountWei < BigInt(intent.expectedWei)) {
       throw new ActionError('That deposit was smaller than the package it was for.');
@@ -321,108 +362,4 @@ export async function confirmDeposit(session: Session, txHash: string): Promise<
 
     return { chips, balance: updated.chips };
   });
-}
-
-export interface RedemptionResult {
-  chips: number;
-  netWei: string;
-  feeWei: string;
-  txHash: string;
-  balance: number;
-}
-
-/**
- * Redeems chips for tBNB, less the operator's fee.
- *
- * Chips are debited before anything is sent, so a payout can never exceed the
- * balance that authorised it. The redemption id is passed to the contract,
- * which refuses to pay the same one twice.
- */
-export async function redeem(session: Session, chips: number): Promise<RedemptionResult> {
-  if (!Number.isInteger(chips) || chips <= 0) throw new ActionError('Enter a whole number of chips.');
-
-  const quote = quoteRedemption(chips);
-
-  const record = await db.transaction(async (tx) => {
-    const [debited] = await tx
-      .update(users)
-      .set({ chips: raw`${users.chips} - ${chips}` })
-      .where(and(eq(users.id, session.userId), raw`${users.chips} >= ${chips}`))
-      .returning({ chips: users.chips });
-
-    if (!debited) throw new ActionError('You do not have that many chips.');
-
-    const [created] = await tx
-      .insert(redemptions)
-      .values({
-        userId: session.userId,
-        chips,
-        grossWei: quote.grossWei.toString(),
-        feeWei: quote.feeWei.toString(),
-        netWei: quote.netWei.toString(),
-      })
-      .returning({ id: redemptions.id });
-
-    await tx.insert(ledgerEntries).values({
-      userId: session.userId,
-      delta: -chips,
-      balanceAfter: debited.chips,
-      reason: 'redemption',
-      reference: created.id,
-    });
-
-    return { id: created.id, balance: debited.chips };
-  });
-
-  try {
-    const txHash = await payOut(session.address as `0x${string}`, quote.netWei, intentToBytes32(record.id));
-    await db
-      .update(redemptions)
-      .set({ status: 'sent', txHash, sentAt: new Date() })
-      .where(eq(redemptions.id, record.id));
-
-    return {
-      chips,
-      netWei: quote.netWei.toString(),
-      feeWei: quote.feeWei.toString(),
-      txHash,
-      balance: record.balance,
-    };
-  } catch (error) {
-    // Broadcast but unresolved. The transaction may still be mined, so
-    // returning the chips here would pay the same redemption twice. The row
-    // keeps its hash and stays pending for an operator to settle.
-    if (error instanceof PayoutUncertain) {
-      await db
-        .update(redemptions)
-        .set({ txHash: error.txHash })
-        .where(eq(redemptions.id, record.id));
-
-      throw new ActionError(
-        'Your payout was sent but has not confirmed yet. Your chips stay spent until it settles, and it will not be sent twice.',
-      );
-    }
-
-    // Nothing was paid, so the chips go back. The redemption stays on file as
-    // failed rather than disappearing.
-    await db.transaction(async (tx) => {
-      await tx.update(redemptions).set({ status: 'failed' }).where(eq(redemptions.id, record.id));
-      const [refunded] = await tx
-        .update(users)
-        .set({ chips: raw`${users.chips} + ${chips}` })
-        .where(eq(users.id, session.userId))
-        .returning({ chips: users.chips });
-      await tx.insert(ledgerEntries).values({
-        userId: session.userId,
-        delta: chips,
-        balanceAfter: refunded.chips,
-        reason: 'adjustment',
-        reference: `refund:${record.id}`,
-      });
-    });
-
-    throw new ActionError(
-      `The payout did not go through, so your chips were returned. ${error instanceof Error ? error.message.slice(0, 120) : ''}`,
-    );
-  }
 }

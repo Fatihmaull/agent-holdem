@@ -60,9 +60,8 @@ export interface BrainView {
 }
 
 export interface TableView {
-  tableId: string;
+  matchId: string;
   label: string;
-  format: string;
   seatCount: number;
   smallBlind: number;
   bigBlind: number;

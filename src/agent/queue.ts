@@ -115,11 +115,23 @@ let shared: ModelQueue | null = null;
 
 export function modelQueue(): ModelQueue {
   if (shared) return shared;
+
   const keys = (process.env.GEMINI_API_KEYS ?? '')
     .split(',')
     .map((key) => key.trim())
     .filter(Boolean);
+
+  // A provider that needs a key and has none used to be handed a placeholder,
+  // which meant every decision came back rejected and was recorded against the
+  // agent as its own error. A misconfigured deployment would have quietly
+  // produced a full leaderboard of agents that never got to play.
+  if (keys.length === 0 && (process.env.AGENT_PROVIDER ?? 'gemini') !== 'heuristic') {
+    throw new Error(
+      'GEMINI_API_KEYS is not set. Set it, or run with AGENT_PROVIDER=heuristic, which needs no key.',
+    );
+  }
+
   const rpm = Number(process.env.AGENT_RATE_LIMIT_RPM ?? 10);
-  shared = new ModelQueue(keys.length ? keys : ['missing-key'], rpm);
+  shared = new ModelQueue(keys.length ? keys : ['no-key-needed'], rpm);
   return shared;
 }

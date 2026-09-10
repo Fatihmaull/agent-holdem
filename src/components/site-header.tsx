@@ -6,12 +6,14 @@ import { useEffect, useRef, useState } from 'react';
 import { formatChips } from '@/lib/economy';
 import { shortAddress } from '@/lib/wallet';
 import { useAccount } from './account-context';
+import { useChain } from './chain-context';
 import { Cashier } from './cashier';
 import { Button } from './ui';
 
 const NAV = [
   { href: '/', label: 'Home', short: 'Home' },
-  { href: '/tables', label: 'Tables', short: 'Tables' },
+  { href: '/matches', label: 'Matches', short: 'Matches' },
+  { href: '/standings', label: 'Standings', short: 'Ranks' },
   { href: '/agent', label: 'Your agent', short: 'Agent' },
 ];
 
@@ -54,10 +56,7 @@ export function SiteHeader() {
           </nav>
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            <span className="hidden items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-xs text-muted lg:inline-flex">
-              <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
-              BNB Testnet
-            </span>
+            <ChainMenu />
 
             {account ? (
               <>
@@ -102,6 +101,95 @@ export function SiteHeader() {
 
       {cashierOpen ? <Cashier onClose={() => setCashierOpen(false)} /> : null}
     </>
+  );
+}
+
+/**
+ * Which network the player is on, and the way to change it.
+ *
+ * It sits where the network badge used to, because it answers the same question
+ * and now answers it with an action. A deployment offering one chain gets the
+ * badge back rather than a menu with nothing to choose.
+ */
+function ChainMenu() {
+  const { chains, chain, loading, switching, switchChain } = useChain();
+  const [open, setOpen] = useState(false);
+  const wrapper = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  if (loading || !chain) return null;
+
+  if (chains.length < 2) {
+    return (
+      <span className="hidden items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-xs text-muted lg:inline-flex">
+        <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
+        {chain.shortName}
+      </span>
+    );
+  }
+
+  return (
+    <div ref={wrapper} className="relative hidden lg:block">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        aria-label={`Network. Currently ${chain.name}.`}
+        disabled={switching}
+        className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-xs text-muted transition-colors hover:text-ink disabled:opacity-50"
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
+        {chain.shortName}
+        <span aria-hidden className="text-faint">▾</span>
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          className="entering absolute right-0 z-50 mt-2 w-64 rounded-card border border-line bg-surface p-1.5 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.9)]"
+        >
+          <p className="label px-2.5 py-2 text-faint">Network</p>
+          {chains.map((entry) => (
+            <button
+              key={entry.key}
+              type="button"
+              role="menuitemradio"
+              aria-checked={entry.key === chain.key}
+              onClick={() => {
+                setOpen(false);
+                void switchChain(entry.key);
+              }}
+              className={`flex w-full items-baseline gap-2 rounded-[0.375rem] px-2.5 py-2 text-left text-sm transition-colors hover:bg-surface-2 ${
+                entry.key === chain.key ? 'text-ink' : 'text-muted'
+              }`}
+            >
+              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+              <span className="mono shrink-0 text-xs text-faint">{entry.nativeCurrency.symbol}</span>
+              {entry.key === chain.key ? <span aria-hidden className="shrink-0 text-accent">●</span> : null}
+            </button>
+          ))}
+          <p className="px-2.5 py-2 text-xs text-faint">
+            Your chips do not move. Only where a deposit settles changes.
+          </p>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

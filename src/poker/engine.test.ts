@@ -251,3 +251,98 @@ test('blinds that put everyone all in still get a board and a showdown', () => {
     'every chip is still on the table',
   );
 });
+
+// Nothing leaves a hand any more. The house takes its cut at the door instead
+// of out of the pot, so the engine's job is now conservation with no exception:
+// whatever went in comes back out, every time, whatever shape the hand took.
+function totalChips(state: HandState): number {
+  return state.seats.reduce((sum, seat) => sum + seat.stack, 0);
+}
+
+test('chips are conserved however the hand ends', () => {
+  const lines: Array<{ name: string; stacks: number[]; actions: Action[][] }> = [
+    {
+      name: 'folded around before the flop',
+      stacks: [1000, 1000, 1000],
+      actions: [[{ type: 'fold' }, { type: 'fold' }]],
+    },
+    {
+      name: 'checked down to showdown',
+      stacks: [1000, 1000],
+      actions: [
+        [{ type: 'call' }, { type: 'check' }],
+        [{ type: 'check' }, { type: 'check' }],
+        [{ type: 'check' }, { type: 'check' }],
+        [{ type: 'check' }, { type: 'check' }],
+      ],
+    },
+    {
+      name: 'a bet nobody called',
+      stacks: [1000, 1000],
+      actions: [
+        [{ type: 'call' }, { type: 'check' }],
+        [{ type: 'bet', to: 400 }, { type: 'fold' }],
+      ],
+    },
+    {
+      name: 'a large raise called',
+      stacks: [10_000, 10_000],
+      actions: [
+        [{ type: 'raise', to: 4000 }, { type: 'call' }],
+        [{ type: 'check' }, { type: 'check' }],
+        [{ type: 'check' }, { type: 'check' }],
+        [{ type: 'check' }, { type: 'check' }],
+      ],
+    },
+    {
+      name: 'everybody all in before the flop',
+      stacks: [1000, 1000, 1000],
+      actions: [[{ type: 'raise', to: 1000 }, { type: 'call' }, { type: 'call' }]],
+    },
+  ];
+
+  for (const line of lines) {
+    // Measured from what everyone sat down with, not from the state after
+    // blinds are posted: a posted blind has already left its stack.
+    const before = line.stacks.reduce((sum, stack) => sum + stack, 0);
+    let state = table(line.stacks);
+
+    for (const street of line.actions) state = play(state, street);
+
+    assert.equal(totalChips(state), before, line.name);
+    assert.equal(state.street, 'complete', `${line.name} finished`);
+  }
+});
+
+test('a pot split between two winners loses no odd chip', () => {
+  // Three chips between two players cannot halve evenly. The odd one goes to a
+  // player rather than to nobody, which is the only place a rounding bug could
+  // still destroy chips now the rake is gone.
+  const before = 3000;
+  let state = table([1000, 1000, 1000]);
+
+  state = play(state, [{ type: 'call' }, { type: 'call' }, { type: 'check' }]);
+  state = play(state, [{ type: 'check' }, { type: 'check' }, { type: 'check' }]);
+  state = play(state, [{ type: 'check' }, { type: 'check' }, { type: 'check' }]);
+  state = play(state, [{ type: 'check' }, { type: 'check' }, { type: 'check' }]);
+
+  assert.equal(state.street, 'complete');
+  assert.equal(totalChips(state), before);
+});
+
+test('a beaten hand is mucked rather than shown', () => {
+  // Both players see every street and check it down, so nobody is all in and
+  // the loser never has to table anything.
+  let state = table([1000, 1000]);
+  state = play(state, [{ type: 'call' }, { type: 'check' }]);
+  state = play(state, [{ type: 'check' }, { type: 'check' }]);
+  state = play(state, [{ type: 'check' }, { type: 'check' }]);
+  state = play(state, [{ type: 'check' }, { type: 'check' }]);
+
+  assert.equal(state.street, 'complete');
+  const shown = state.events.filter((event) => event.type === 'showdown');
+  const winners = new Set(state.events.filter((event) => event.type === 'award').map((event) => event.seat));
+
+  assert.ok(shown.length >= 1, 'somebody has to table a hand to claim the pot');
+  assert.equal(shown.length, winners.size, 'only the hands that took chips were shown');
+});

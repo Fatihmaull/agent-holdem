@@ -7,8 +7,16 @@ optimizer = true
 optimizer_runs = 200
 via_ir = false
 
+# Aliases for running forge by hand. `pnpm deploy:vault <chain-key>` passes the
+# endpoint straight through instead, reading it from src/lib/chains.ts, so these
+# and the registry cannot disagree about which chain is being deployed to.
 [rpc_endpoints]
-bsc_testnet = "${BSC_TESTNET_RPC_URL}"
+bnb_testnet = "${BNB_TESTNET_RPC_URL}"
+arbitrum_sepolia = "${ARBITRUM_SEPOLIA_RPC_URL}"
+monad_testnet = "${MONAD_TESTNET_RPC_URL}"
 
+# Verification is per explorer, not per chain, so only the explorers with an
+# Etherscan-compatible API appear here.
 [etherscan]
-bsc_testnet = { key = "${BSCSCAN_API_KEY}", chain = 97 }
+bnb_testnet = { key = "${BNB_TESTNET_EXPLORER_API_KEY}", chain = 97 }
+arbitrum_sepolia = { key = "${ARBITRUM_SEPOLIA_EXPLORER_API_KEY}", chain = 421614 }

@@ -1,9 +1,13 @@
 import { ActionError, saveAgent } from '@/server/actions';
 import { getSession } from '@/server/auth';
+import { callerOf, take, tooMany } from '@/server/rate-limit';
 
 export async function POST(request: Request): Promise<Response> {
   const session = await getSession();
   if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+
+  const allowed = take('write', callerOf(request, session.userId));
+  if (!allowed.ok) return tooMany(allowed.retryAfterMs);
 
   const body = (await request.json().catch(() => null)) as { name?: string; instructions?: string } | null;
   if (typeof body?.name !== 'string' || typeof body?.instructions !== 'string') {

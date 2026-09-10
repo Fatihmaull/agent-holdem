@@ -1,6 +1,7 @@
 import { noteDepositTx, unsettledDeposits } from '@/server/actions';
 import { ActionError } from '@/server/actions';
 import { getSession } from '@/server/auth';
+import { callerOf, take, tooMany } from '@/server/rate-limit';
 
 /**
  * Deposits that were paid but never credited.
@@ -18,6 +19,9 @@ export async function GET(): Promise<Response> {
 export async function POST(request: Request): Promise<Response> {
   const session = await getSession();
   if (!session) return Response.json({ error: 'Connect your wallet first.' }, { status: 401 });
+
+  const allowed = take('write', callerOf(request, session.userId));
+  if (!allowed.ok) return tooMany(allowed.retryAfterMs);
 
   const body = (await request.json().catch(() => null)) as { intentId?: string; txHash?: string } | null;
   if (!body?.intentId || !body?.txHash) {

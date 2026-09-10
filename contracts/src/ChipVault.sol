@@ -2,19 +2,26 @@
 pragma solidity 0.8.28;
 
 /// @title ChipVault
-/// @notice Custodies tBNB backing the off-chain chip ledger for AgentHoldem.
-/// @dev The chip ledger itself lives off-chain. This contract exists so that
+/// @notice Custodies the native token backing the off-chain chip ledger for AgentHoldem.
+/// @dev One vault per chain, each holding only its own float. The chip ledger
+///      itself lives off-chain and spans them. This contract exists so that
 ///      deposits are observable as events rather than as bare transfers, which
-///      removes the need to trust a client-supplied transaction hash. Solvency
-///      is enforced by the operator, not by this contract.
+///      removes the need to trust a client-supplied transaction hash.
+///
+///      Chips are one-way. There is deliberately no function here that pays a
+///      player, so a chip cannot be turned back into a token by this contract
+///      under any caller, the operator included. Chips buy table time and a
+///      place on the record, and that is the whole of what they are worth.
+///      Making that a property of the deployed bytecode rather than a policy in
+///      the application is the point: a policy can be changed by a deploy.
 contract ChipVault {
-    /// @notice Address allowed to pay out redemptions and sweep fees.
+    /// @notice Address allowed to sweep the vault and change its settings.
     address public owner;
 
     /// @notice Address that has been nominated but has not yet accepted ownership.
     address public pendingOwner;
 
-    /// @notice When true, new deposits are rejected. Payouts remain available.
+    /// @notice When true, new deposits are rejected.
     bool public depositsPaused;
 
     /// @notice Smallest accepted deposit, in wei. Blocks dust that costs more to index than it is worth.
@@ -23,11 +30,7 @@ contract ChipVault {
     /// @notice Intent identifiers already consumed by a deposit.
     mapping(bytes32 intentId => bool used) public intentUsed;
 
-    /// @notice Redemption identifiers already paid out.
-    mapping(bytes32 redemptionId => bool paid) public redemptionPaid;
-
     event Deposited(address indexed payer, bytes32 indexed intentId, uint256 amount);
-    event PaidOut(address indexed recipient, bytes32 indexed redemptionId, uint256 amount);
     event Swept(address indexed recipient, uint256 amount);
     event Funded(address indexed sender, uint256 amount);
     event DepositsPausedSet(bool paused);
@@ -40,7 +43,6 @@ contract ChipVault {
     error DepositsArePaused();
     error DepositTooSmall(uint256 sent, uint256 required);
     error IntentAlreadyUsed(bytes32 intentId);
-    error RedemptionAlreadyPaid(bytes32 redemptionId);
     error ZeroAddress();
     error ZeroAmount();
     error InsufficientBalance(uint256 requested, uint256 available);
@@ -59,7 +61,7 @@ contract ChipVault {
         emit MinDepositSet(initialMinDeposit);
     }
 
-    /// @notice Deposit tBNB against an intent issued by the operator.
+    /// @notice Deposit the chain's native token against an intent issued by the operator.
     /// @param intentId Opaque identifier the operator issued to this player before the deposit.
     /// @dev The operator must still check that `payer` matches the address the intent was issued
     ///      to. Consuming the intent here only guarantees a single credit per identifier.
@@ -72,22 +74,10 @@ contract ChipVault {
         emit Deposited(msg.sender, intentId, msg.value);
     }
 
-    /// @notice Pay a redemption out to a player. Amount is net of the operator's fee.
-    /// @param redemptionId Identifier of the redemption record in the off-chain ledger.
-    function payout(address recipient, uint256 amount, bytes32 redemptionId) external onlyOwner {
-        if (recipient == address(0)) revert ZeroAddress();
-        if (amount == 0) revert ZeroAmount();
-        if (redemptionPaid[redemptionId]) revert RedemptionAlreadyPaid(redemptionId);
-        if (amount > address(this).balance) revert InsufficientBalance(amount, address(this).balance);
-
-        redemptionPaid[redemptionId] = true;
-        emit PaidOut(recipient, redemptionId, amount);
-
-        (bool ok,) = recipient.call{value: amount}("");
-        if (!ok) revert TransferFailed();
-    }
-
-    /// @notice Withdraw accumulated fees. Solvency of the remaining float is the operator's responsibility.
+    /// @notice Withdraw the vault's balance to the operator.
+    /// @dev This is the operator's own treasury function and is not a player
+    ///      withdrawal path: it can only send to an address the owner names, and
+    ///      nothing in this contract lets a player reach it.
     function sweep(address recipient, uint256 amount) external onlyOwner {
         if (recipient == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
@@ -99,7 +89,7 @@ contract ChipVault {
         if (!ok) revert TransferFailed();
     }
 
-    /// @notice Top the vault up without crediting any player. Used to pre-fund payouts.
+    /// @notice Top the vault up without crediting any player.
     function fund() external payable {
         if (msg.value == 0) revert ZeroAmount();
         emit Funded(msg.sender, msg.value);

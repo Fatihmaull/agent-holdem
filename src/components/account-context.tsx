@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { connect, currentAddress, signMessage, WalletError } from '@/lib/wallet';
+import { useChain } from './chain-context';
 
 interface AccountAgent {
   id: string;
@@ -12,13 +13,19 @@ interface AccountAgent {
   handsWon: number;
   chipsWon: number;
   biggestPot: number;
+  /** The published rating, which is what the standings sort on. */
+  rating: number;
+  matchesPlayed: number;
 }
 
 interface AccountState {
   address: string;
   chips: number;
   agent: AccountAgent;
-  seat: { tableId: string; seatIndex: number; stack: number } | null;
+  /** The match it is playing in right now, or null while it waits for one. */
+  seat: { matchId: string; seatIndex: number; stack: number } | null;
+  /** Whether its owner has it switched on. Off means it queues for nothing. */
+  playing: boolean;
 }
 
 interface AccountContextValue {
@@ -35,6 +42,7 @@ interface AccountContextValue {
 const Context = createContext<AccountContextValue | null>(null);
 
 export function AccountProvider({ children }: { children: React.ReactNode }) {
+  const { chain } = useChain();
   const [account, setAccount] = useState<AccountState | null>(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -70,7 +78,10 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
     setConnecting(true);
     setError(null);
     try {
-      const address = (await currentAddress()) ?? (await connect());
+      // Signing in puts the wallet on the network the server will name in the
+      // message, so the two do not disagree on the first transaction.
+      if (!chain) throw new Error('Still loading the available networks. Try again in a moment.');
+      const address = (await currentAddress()) ?? (await connect(chain));
 
       const nonceResponse = await fetch(`/api/auth/nonce?address=${address}`, { cache: 'no-store' });
       const nonceBody = (await nonceResponse.json()) as { message?: string; error?: string };
@@ -98,7 +109,7 @@ export function AccountProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setConnecting(false);
     }
-  }, [refresh]);
+  }, [refresh, chain]);
 
   const signOut = useCallback(async () => {
     await fetch('/api/auth/logout', { method: 'POST' });

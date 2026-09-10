@@ -1,79 +1,79 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { TABLES, tableLabel } from '@/lib/economy';
-import type { TableFormat } from '@/lib/economy';
 
 export interface LobbySeat {
   index: number;
   name: string | null;
   color: string | null;
   stack: number;
+  /** Out of chips. Still shown, because where it finished is part of the record. */
+  busted: boolean;
   isMine: boolean;
 }
 
-export interface LobbyTable {
+export interface LobbyMatch {
   id: string;
   label: string;
-  format: TableFormat;
+  status: string;
   seatCount: number;
   smallBlind: number;
   bigBlind: number;
   buyIn: number;
+  handCap: number;
   handNumber: number;
   live: boolean;
   pot: number;
+  /** Average rating of the entrants, which is the band this match was drawn from. */
+  bandRating: number | null;
+  startedAt: string | null;
+  endedAt: string | null;
   seats: LobbySeat[];
 }
 
-/**
- * The roster is a fixed six known without asking the server, so the lobby draws
- * itself complete on the first paint and the poll only fills in who is sitting
- * where. A skeleton would be inventing suspense about a list that never changes.
- */
-const ROSTER: LobbyTable[] = TABLES.map((table) => ({
-  id: table.id,
-  label: tableLabel(table),
-  format: table.format,
-  seatCount: table.seats,
-  smallBlind: table.smallBlind,
-  bigBlind: table.bigBlind,
-  buyIn: table.buyIn,
-  handNumber: 0,
-  live: false,
-  pot: 0,
-  seats: [],
-}));
-
 export interface Lobby {
-  tables: LobbyTable[];
-  /** The table this account's agent is sitting at, if any. */
+  matches: LobbyMatch[];
+  /** The match this account's agent is playing in, if any. */
   seatedAt: string | null;
-  /** False until the first poll lands, when seat counts are not yet known. */
+  /** Whether the owner has their agent switched on. */
+  playing: boolean;
+  /** False until the first poll lands, when nothing about the floor is known. */
   loaded: boolean;
   reload: () => void;
 }
 
+/**
+ * What is being dealt right now.
+ *
+ * There is no roster. Matches are created by the matchmaker and settled the
+ * moment they end, so which ones exist is only knowable from the server and the
+ * list starts empty until the first poll lands.
+ */
 export function useLobby(): Lobby {
-  const [tables, setTables] = useState<LobbyTable[]>(ROSTER);
+  const [matches, setMatches] = useState<LobbyMatch[]>([]);
   const [seatedAt, setSeatedAt] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [reloads, setReloads] = useState(0);
 
   const reload = useCallback(() => setReloads((count) => count + 1), []);
 
-  // The roster is external state, so it is polled and applied in a callback
+  // The floor is external state, so it is polled and applied in a callback
   // rather than assigned while the effect body runs.
   useEffect(() => {
     let cancelled = false;
 
     const poll = () => {
-      fetch('/api/tables', { cache: 'no-store' })
-        .then((response) => response.json() as Promise<{ tables: LobbyTable[]; seatedAt: string | null }>)
+      fetch('/api/matches', { cache: 'no-store' })
+        .then(
+          (response) =>
+            response.json() as Promise<{ matches: LobbyMatch[]; seatedAt: string | null; playing: boolean }>,
+        )
         .then((body) => {
           if (cancelled) return;
-          setTables(body.tables);
+          setMatches(body.matches);
           setSeatedAt(body.seatedAt);
+          setPlaying(body.playing);
           setLoaded(true);
         })
         .catch(() => {});
@@ -87,9 +87,9 @@ export function useLobby(): Lobby {
     };
   }, [reloads]);
 
-  return { tables, seatedAt, loaded, reload };
+  return { matches, seatedAt, playing, loaded, reload };
 }
 
-export function seatsTaken(table: LobbyTable): number {
-  return table.seats.filter((seat) => seat.name).length;
+export function seatsTaken(match: LobbyMatch): number {
+  return match.seats.filter((seat) => seat.name).length;
 }

@@ -1,17 +1,19 @@
 import { cardName, type Card } from '../poker/cards';
 import { applyAction, legalActions, startHand, totalPot, type HandState, type Street } from '../poker/engine';
 import { describe as describeHand, evaluate } from '../poker/evaluate';
-import { decide, type DecisionRecord } from '../agent/decide';
+import { conservative } from '../lib/rating';
+import { decide, reviseNotes, type DecisionRecord } from '../agent/decide';
 import { OPPONENT_COLORS } from '../agent/colors';
 import type { ModelProvider } from '../agent/provider';
 import type { ModelQueue } from '../agent/queue';
-import { type TableConfig, tableLabel } from '../lib/economy';
+import { type MatchConfig, stakesLabel } from '../lib/economy';
 import {
   ACTION_BEAT_MS,
   ACT_CLOCK_MS,
   AWARD_BEAT_MS,
   BETWEEN_HANDS_MS,
   HAND_END_BEAT_MS,
+  NOTE_CLOCK_MS,
   REVEAL_BEAT_MS,
   SHOWDOWN_BEAT_MS,
   STREET_BEAT_MS,
@@ -20,17 +22,22 @@ import {
 } from '../lib/pacing';
 import { TableBus } from './bus';
 import {
-  lastHandNumber,
-  leaveSeat,
+  bustSeat,
+  clearInHand,
+  loadNotes,
   loadSeats,
+  markInHand,
+  ratingsOf,
   recordResults,
   saveHand,
+  saveNote,
   saveStacks,
+  type MatchEnding,
   type SeatedAgent,
 } from './store';
 import type { ArenaEvent, BrainView, LogLine, SeatStatus, SeatView, TableView } from './view';
 
-export class TableRuntime {
+export class MatchRuntime {
   readonly bus = new TableBus();
 
   private seated: SeatedAgent[] = [];
@@ -49,10 +56,8 @@ export class TableRuntime {
   private buttonChair = -1;
   /** True from the moment a hand's lineup is fixed until its result is stored. */
   private handLive = false;
-  /** Cash-outs that are mid-flight, which must not race a hand starting. */
-  private leaving = 0;
-  /** Agents that asked to leave while their hand was still running. */
-  private pendingLeave = new Set<string>();
+  /** How the match ended, once it has. Null while it is still being played. */
+  private ending: MatchEnding | null = null;
   private toAct: number | null = null;
   private deadline: number | null = null;
   private brain: BrainView | null = null;
@@ -65,17 +70,35 @@ export class TableRuntime {
   private talk = new Map<number, string>();
   private log: LogLine[] = [];
   private logSequence = 0;
+  /** Ratings of everyone in the match, read once when it opens. */
+  private ratings = new Map<string, number>();
   private running = false;
   private stopping = new AbortController();
 
   constructor(
-    readonly config: TableConfig,
+    readonly matchId: string,
+    readonly config: MatchConfig,
     private readonly provider: ModelProvider,
     private readonly queue: ModelQueue,
+    /** Called once the match is over, so the matchmaker can close it out. */
+    private readonly onFinished: (matchId: string, ending: MatchEnding, hands: number) => void,
   ) {}
 
-  async refreshSeats(): Promise<void> {
-    this.seated = await loadSeats(this.config.id);
+  /**
+   * Reads the roster once, when the match opens.
+   *
+   * Nobody joins and nobody leaves a match, so this is not a refresh in the old
+   * sense: the set of agents is fixed from the first hand to the last, which is
+   * the whole reason a finishing order means anything.
+   */
+  private async loadRoster(): Promise<void> {
+    this.seated = await loadSeats(this.matchId);
+    this.ratings = new Map(
+      [...(await ratingsOf(this.seated.map((seat) => seat.agentId)))].map(
+        ([agentId, rating]) => [agentId, conservative(rating)],
+      ),
+    );
+
     this.palette = tablePalette(this.seated);
     this.publish({ type: 'seats', seats: this.seatViews(null) });
   }
@@ -89,30 +112,6 @@ export class TableRuntime {
   /** Chair a given engine position is sitting in. */
   private chairOf(position: number): number {
     return this.lineup[position]?.seatIndex ?? position;
-  }
-
-  /**
-   * Takes an agent out of its seat and returns its stack.
-   *
-   * A hand already in progress owns the chips in front of it, so a request that
-   * arrives mid-hand is held until the hand is stored rather than paying out a
-   * stack the table is still playing with. `leaving` is raised before the first
-   * await so the match loop cannot start a hand around a seat that is going.
-   */
-  async requestLeave(agentId: string, seatIndex: number): Promise<'left' | 'queued'> {
-    if (this.handLive && this.lineup.some((seat) => seat.agentId === agentId)) {
-      this.pendingLeave.add(agentId);
-      return 'queued';
-    }
-
-    this.leaving += 1;
-    try {
-      await leaveSeat(this.config.id, seatIndex);
-      await this.refreshSeats();
-    } finally {
-      this.leaving -= 1;
-    }
-    return 'left';
   }
 
   /** Whether this agent is sitting in the hand being played right now. */
@@ -139,9 +138,8 @@ export class TableRuntime {
    */
   view(viewerAgentId: string | null): TableView {
     return {
-      tableId: this.config.id,
-      label: tableLabel(this.config),
-      format: this.config.format,
+      matchId: this.matchId,
+      label: `${stakesLabel()} match`,
       seatCount: this.config.seats,
       smallBlind: this.config.smallBlind,
       bigBlind: this.config.bigBlind,
@@ -249,38 +247,25 @@ export class TableRuntime {
   }
 
   private async loop(): Promise<void> {
+    try {
+      await this.loadRoster();
+    } catch (error) {
+      console.error(`[${this.matchId}] cannot read the roster`, error);
+      this.finish('abandoned');
+      return;
+    }
+
     while (this.running) {
-      // Pick up where this table left off, so numbering never collides with
-      // what is already stored. Guessing zero here makes every later save
-      // violate the unique hand number and the table deals into a void, so a
-      // failed read waits and asks again instead.
-      if (this.handNumber === 0) {
-        try {
-          this.handNumber = await lastHandNumber(this.config.id);
-        } catch (error) {
-          console.error(`[${this.config.id}] cannot read the hand number`, error);
-          this.publish({ type: 'idle', reason: 'Reconnecting to the match record.' });
-          await this.pause(4_000);
-          continue;
-        }
+      // Everyone but one is out of chips. That is the match, and it is over the
+      // moment it happens rather than at the end of some tidier boundary.
+      if (this.alive().length < 2) {
+        this.finish('elimination');
+        return;
       }
 
-      await this.refreshSeats();
-
-      // A cash-out is mid-flight. Its seat still shows a stack that the payout
-      // is about to claim, so no hand may be built around it.
-      if (this.leaving > 0) {
-        await this.pause(200);
-        continue;
-      }
-
-      if (this.seated.length < 2) {
-        this.state = null;
-        this.toAct = null;
-        this.deadline = null;
-        this.publish({ type: 'idle', reason: 'Waiting for a second agent to sit down.' });
-        await this.pause(4_000);
-        continue;
+      if (this.handNumber >= this.config.handCap) {
+        this.finish('cap');
+        return;
       }
 
       try {
@@ -288,22 +273,93 @@ export class TableRuntime {
       } catch (error) {
         // Spectators get a plain sentence; the detail goes to the server log,
         // because a driver's error text is not something to put on the ticker.
-        console.error(`[${this.config.id}] hand ${this.handNumber} abandoned`, error);
+        console.error(`[${this.matchId}] hand ${this.handNumber} abandoned`, error);
         this.note('That hand could not be completed and was abandoned.');
       } finally {
-        // Whatever happened, no hand is holding chips any more. Leaving this
-        // set would block every cash-out at this table until the next deal.
+        // Whatever happened, no hand is holding chips any more. Leaving either
+        // of these set would strand the match: the flag until the next deal,
+        // and the rows forever, because nothing else clears them.
         this.handLive = false;
+        await clearInHand(this.matchId).catch((error) => {
+          console.error(`[${this.matchId}] could not release the seats`, error);
+        });
       }
 
       await this.pause(BETWEEN_HANDS_MS);
     }
   }
 
+  /** Seats that still have chips to play with. */
+  private alive(): SeatedAgent[] {
+    return this.seated.filter((seat) => seat.bustedAtHand === null && seat.stack >= this.config.bigBlind);
+  }
+
+  /**
+   * Stops dealing and hands the match back to be settled.
+   *
+   * The settling itself happens outside this runtime, because it moves chips
+   * and updates ratings and none of that should be tangled up with the loop
+   * that deals cards.
+   */
+  private finish(ending: MatchEnding): void {
+    if (this.ending !== null) return;
+    this.ending = ending;
+    this.running = false;
+
+    this.state = null;
+    this.toAct = null;
+    this.deadline = null;
+    this.note(
+      ending === 'elimination'
+        ? 'One agent has everything. That is the match.'
+        : ending === 'cap'
+          ? `The hand limit is up after ${this.handNumber} hands.`
+          : 'The match was abandoned.',
+    );
+    this.publish({ type: 'idle', reason: 'This match is over.' });
+
+    this.onFinished(this.matchId, ending, this.handNumber);
+  }
+
+  /**
+   * What each agent at this table remembers about the others, by author then
+   * by subject. The control arm is simply absent, so it sits down knowing
+   * nobody.
+   */
+  private async loadTableNotes(lineup: SeatedAgent[]): Promise<Map<string, Map<string, string>>> {
+    const notes = new Map<string, Map<string, string>>();
+
+    for (const reader of lineup) {
+      if (!reader.notesEnabled) continue;
+      const subjects = lineup.filter((seat) => seat.agentId !== reader.agentId).map((seat) => seat.agentId);
+      try {
+        notes.set(reader.agentId, await loadNotes(this.matchId, reader.agentId, subjects));
+      } catch (error) {
+        // A memory that will not load is one agent playing this hand blind,
+        // which is a worse hand for that agent rather than a stalled table.
+        console.error(`[${this.matchId}] could not read notes for ${reader.name}`, error);
+      }
+    }
+
+    return notes;
+  }
+
   private async playHand(): Promise<void> {
-    // Fixing the lineup is what makes the hand live. Nothing between here and
-    // the first await may yield, or a cash-out could slip in beside it.
-    const lineup = [...this.seated].sort((a, b) => a.seatIndex - b.seatIndex);
+    // Only seats with chips left. Everyone else is eliminated and stays on the
+    // record of where they finished rather than being dealt to.
+    const seated = this.alive().sort((a, b) => a.seatIndex - b.seatIndex);
+
+    // Claimed on the rows before a card exists, so nothing else can settle one
+    // of these seats out from under a hand it is about to bet with. A seat that
+    // could not be claimed is dropped rather than dealt to on a stale read.
+    const claimed = new Set(await markInHand(this.matchId, seated.map((seat) => seat.seatIndex)));
+    const lineup = seated.filter((seat) => claimed.has(seat.seatIndex));
+    if (lineup.length < 2) {
+      await clearInHand(this.matchId);
+      this.finish('elimination');
+      return;
+    }
+
     this.lineup = lineup;
     this.handLive = true;
 
@@ -324,8 +380,8 @@ export class TableRuntime {
     this.brain = null;
 
     let state = startHand({
-      handId: `${this.config.id}-${this.handNumber}`,
-      seats: lineup.map((seat) => ({ agentId: seat.agentId, stack: seat.stack })),
+      handId: `${this.matchId}-${this.handNumber}`,
+      seats: lineup.map((seat) => ({ agentId: seat.agentId, stack: seat.stack, sittingOut: false })),
       button,
       smallBlind: this.config.smallBlind,
       bigBlind: this.config.bigBlind,
@@ -336,7 +392,8 @@ export class TableRuntime {
     // Who was made to post what, so a seat that has not acted yet still has
     // something true to show rather than an empty line.
     for (const event of state.events) {
-      if (event.type === 'blind') this.blinds.set(this.chairOf(event.seat), { kind: event.kind, amount: event.amount });
+      if (event.type !== 'blind') continue;
+      this.blinds.set(this.chairOf(event.seat), { kind: event.kind, amount: event.amount });
     }
 
     this.note(`Hand ${this.handNumber} dealt. Blinds ${this.config.smallBlind}/${this.config.bigBlind}.`);
@@ -346,6 +403,11 @@ export class TableRuntime {
       button: this.buttonChair,
       seats: this.seatViews(null),
     });
+
+    // Read once for the hand. An agent only writes between hands, so its notes
+    // cannot change while it is playing and re-reading them every turn would
+    // fetch identical rows two or three times a hand.
+    const notes = await this.loadTableNotes(lineup);
 
     const recorded: Array<{ seatIndex: number; agentId: string; record: DecisionRecord; street: string }> = [];
     let eventCursor = state.events.length;
@@ -398,6 +460,7 @@ export class TableRuntime {
         bigBlind: this.config.bigBlind,
         clockMs: ACT_CLOCK_MS,
         opponentNames: new Map(lineup.map((seat) => [seat.agentId, seat.name])),
+        notes: notes.get(agent.agentId),
         provider: this.provider,
         queue: this.queue,
         signal: this.stopping.signal,
@@ -495,7 +558,80 @@ export class TableRuntime {
     }
 
     await this.settleOnScreen(state, lineup);
-    await this.persist({ lineup, state, seed, startedAt, recorded });
+    const handId = await this.persist({ lineup, state, seed, startedAt, recorded });
+    await this.writeNotes({ lineup, state, recorded, notes, handId });
+  }
+
+  /**
+   * Gives every agent that asked during the hand its one look back at it.
+   *
+   * This is the only moment an agent can see cards that were turned over, which
+   * is why the request happens here rather than inside the hand. Requests run
+   * together rather than one after another: they are independent, and serialised
+   * they could hold the table for as long as it takes several agents to write.
+   */
+  private async writeNotes(context: {
+    lineup: SeatedAgent[];
+    state: HandState;
+    recorded: Array<{ agentId: string; record: DecisionRecord }>;
+    notes: Map<string, Map<string, string>>;
+    handId: string;
+  }): Promise<void> {
+    const { lineup, state, recorded, notes, handId } = context;
+
+    const asked = new Set(
+      recorded.filter((entry) => entry.record.remember === true).map((entry) => entry.agentId),
+    );
+    const writers = lineup.filter(
+      (seat) => asked.has(seat.agentId) && seat.notesEnabled,
+    );
+    if (writers.length === 0) return;
+
+    const hand = summariseHand(state, lineup);
+
+    await Promise.all(
+      writers.map(async (writer) => {
+        // Absent means the read failed at the start of the hand, not that this
+        // agent remembers nobody. Writing from here would show it a blank slate
+        // and let it replace real notes with first impressions, so a hand whose
+        // memory could not be read is a hand it does not get to rewrite.
+        const held = notes.get(writer.agentId);
+        if (held === undefined) return;
+
+        const opponents = lineup
+          .filter((seat) => seat.agentId !== writer.agentId)
+          .map((seat) => ({ name: seat.name, note: held.get(seat.agentId) ?? null }));
+
+        const { updates, failure } = await reviseNotes({
+          agent: { id: writer.agentId, name: writer.name, instructions: writer.instructions },
+          hand,
+          opponents,
+          clockMs: NOTE_CLOCK_MS,
+          provider: this.provider,
+          queue: this.queue,
+          signal: this.stopping.signal,
+        });
+
+        if (failure) {
+          console.error(`[${this.matchId}] ${writer.name} could not write its notes: ${failure}`);
+          return;
+        }
+
+        // Names came back from the model, so they are matched against the seats
+        // rather than trusted: a note is only ever written about somebody this
+        // agent actually just played.
+        const byName = new Map(lineup.map((seat) => [seat.name, seat.agentId]));
+        for (const update of updates) {
+          const subjectId = byName.get(update.name);
+          if (subjectId === undefined || subjectId === writer.agentId) continue;
+          try {
+            await saveNote({ matchId: this.matchId, authorId: writer.agentId, subjectId, text: update.text, handId });
+          } catch (error) {
+            console.error(`[${this.matchId}] could not store a note for ${writer.name}`, error);
+          }
+        }
+      }),
+    );
   }
 
   /** Streets and showdowns land as their own beats rather than inside a decision. */
@@ -568,12 +704,12 @@ export class TableRuntime {
     seed: number;
     startedAt: Date;
     recorded: Array<{ seatIndex: number; agentId: string; record: DecisionRecord; street: string }>;
-  }): Promise<void> {
+  }): Promise<string> {
     const { lineup, state, seed, startedAt, recorded } = context;
     const potSize = totalPot(state);
 
-    await saveHand({
-      tableId: this.config.id,
+    const handId = await saveHand({
+      matchId: this.matchId,
       handNumber: this.handNumber,
       seed,
       state,
@@ -587,40 +723,80 @@ export class TableRuntime {
       decisions: recorded,
     });
 
+    const dealtIn = state.seats.filter((seat) => !seat.sittingOut);
+    const showdown = state.events.some((event) => event.type === 'showdown');
+
     await recordResults(
-      lineup.map((seat, position) => {
+      { handId, matchId: this.matchId, bigBlind: this.config.bigBlind },
+      lineup.flatMap((seat, position) => {
         const finished = state.seats[position];
+        if (finished.sittingOut) return [];
+
         const net = finished.stack - seat.stack;
-        return { agentId: seat.agentId, won: net > 0, net, potSize };
+        return [
+          {
+            agentId: seat.agentId,
+            won: net > 0,
+            net,
+            potSize,
+            startingStack: seat.stack,
+            showdown,
+            opponents: dealtIn.length - 1,
+            // A snapshot of how strong the opposition was, taken now rather
+            // than joined later, because ratings move and asking next month how
+            // good these opponents were would answer with next month's opinion.
+            opponentRating: averageRating(
+              dealtIn
+                .filter((other) => other.index !== position)
+                .map((other) => this.ratings.get(lineup[other.index]?.agentId ?? '')),
+            ),
+          },
+        ];
       }),
     );
 
     await saveStacks(
-      this.config.id,
+      this.matchId,
       lineup.map((seat, position) => ({ seatIndex: seat.seatIndex, stack: state.seats[position].stack })),
     );
 
-    // The hand is on record, so its chips are no longer in play and the seats
-    // can be released. Anything after this point is bookkeeping.
+    // Carry the result back onto the roster this runtime deals from.
+    //
+    // The roster is read once, when the match opens, because nobody joins or
+    // leaves after that. Which means nothing else ever updates it: without this
+    // every hand would be dealt with everyone back at their buy-in, chips would
+    // appear and vanish between hands, and the stored results would all claim a
+    // starting stack of exactly the buy-in. The lineup entries are the same
+    // objects as the roster's, so assigning here is what makes hand two follow
+    // from hand one.
+    for (const [position, seat] of lineup.entries()) {
+      seat.stack = state.seats[position].stack;
+    }
+
+    // The chips are on record, so the seats stop belonging to the hand. Done
+    // before anything below can fail: a seat left marked in-hand is a seat the
+    // match can never settle, which strands its owner's stack.
+    await clearInHand(this.matchId);
     this.handLive = false;
 
-    // A stack too short to post a big blind cannot play the next hand, so the
-    // seat is released and whatever is left goes back to its owner's balance.
-    // Owners who asked to leave mid-hand are released here for the same reason:
-    // this is the first moment their stack is settled.
+    // A stack too short to post a big blind cannot play another hand. Nobody
+    // leaves a match, so an eliminated seat stays where it is with its finishing
+    // hand recorded, which is what fixes the order among everyone who went out.
     for (const [position, seat] of lineup.entries()) {
-      const busted = state.seats[position].stack < this.config.bigBlind;
-      const recalled = this.pendingLeave.has(seat.agentId);
-      if (!busted && !recalled) continue;
+      const stack = state.seats[position].stack;
+      if (stack >= this.config.bigBlind) continue;
 
-      await leaveSeat(this.config.id, seat.seatIndex);
-      this.pendingLeave.delete(seat.agentId);
+      await bustSeat(this.matchId, seat.seatIndex, this.handNumber);
+      seat.bustedAtHand = this.handNumber;
       this.note(
-        busted ? `${seat.name} is out of chips and leaves the table.` : `${seat.name} was recalled by its owner.`,
+        stack > 0
+          ? `${seat.name} is down to ${stack} and cannot post a blind, finishing on hand ${this.handNumber}.`
+          : `${seat.name} is out of chips, finishing on hand ${this.handNumber}.`,
         seat.seatIndex,
       );
     }
-    this.pendingLeave.clear();
+
+    return handId;
   }
 }
 
@@ -631,6 +807,13 @@ export class TableRuntime {
  * happens to be numbered today, which hands the same player the button twice
  * whenever a seat empties.
  */
+/** Mean of the ratings we have, ignoring opponents that carry none. */
+function averageRating(ratings: Array<number | undefined>): number {
+  const known = ratings.filter((rating): rating is number => rating !== undefined);
+  if (known.length === 0) return 0;
+  return known.reduce((sum, rating) => sum + rating, 0) / known.length;
+}
+
 function nextButtonPosition(lineup: SeatedAgent[], lastChair: number): number {
   const after = lineup.findIndex((seat) => seat.seatIndex > lastChair);
   return after >= 0 ? after : 0;
@@ -664,6 +847,48 @@ function lastActionEvent(state: HandState, from: number): { action: string; amou
     if (event.type === 'action') return { action: event.action, amount: event.amount, to: event.to };
   }
   return null;
+}
+
+/**
+ * The hand as a player who sat through it would recount it. Built from the
+ * engine's own events rather than from the display log, so it carries what
+ * happened rather than what the ticker had room for.
+ *
+ * Only cards the engine actually turned over appear here. A hand that was
+ * mucked stays mucked, so an agent writing its notes knows exactly what the
+ * table knows and nothing more.
+ */
+function summariseHand(state: HandState, lineup: SeatedAgent[]): string[] {
+  const nameOf = (position: number) => lineup[position]?.name ?? `seat ${position + 1}`;
+  const lines: string[] = [];
+
+  for (const event of state.events) {
+    switch (event.type) {
+      case 'blind':
+        lines.push(`${nameOf(event.seat)} posts the ${event.kind} blind, ${event.amount}.`);
+        break;
+      case 'street':
+        lines.push(`${event.street}: ${event.cards.map(cardName).join(' ') || 'no new cards'}`);
+        break;
+      case 'action':
+        lines.push(describeAction(nameOf(event.seat), event.action, event.amount));
+        break;
+      case 'showdown':
+        lines.push(
+          `${nameOf(event.seat)} shows ${event.hole.map(cardName).join(' ')} for ${describeHand(event.score)}.`,
+        );
+        break;
+      case 'award':
+        lines.push(
+          event.uncontested
+            ? `${nameOf(event.seat)} wins ${event.amount}, everyone else folded.`
+            : `${nameOf(event.seat)} wins ${event.amount} at showdown.`,
+        );
+        break;
+    }
+  }
+
+  return lines;
 }
 
 function describeAction(name: string, action: string, amount: number): string {

@@ -1,8 +1,25 @@
 import type { Action, HandState, LegalActions } from '../poker/engine';
 import { legalActions, totalPot } from '../poker/engine';
 import { type Equity, type HandRead, equityVsRandom, readHand } from '../poker/equity';
-import { type AgentDecision, type DecisionOutcome, defaultAction, extractJson, validateDecision } from './decision';
-import { type DecisionContext, type OpponentView, SYSTEM_PROMPT, buildPrompt } from './prompt';
+import {
+  type AgentDecision,
+  type DecisionOutcome,
+  MAX_NOTE,
+  type NoteUpdate,
+  defaultAction,
+  extractJson,
+  validateDecision,
+  validateNotes,
+} from './decision';
+import {
+  type DecisionContext,
+  NOTE_SYSTEM_PROMPT,
+  type NoteSubject,
+  type OpponentView,
+  SYSTEM_PROMPT,
+  buildNotePrompt,
+  buildPrompt,
+} from './prompt';
 import type { ModelProvider } from './provider';
 import type { ModelQueue } from './queue';
 
@@ -25,6 +42,11 @@ export interface DecideOptions {
    * tells the model nothing and reads as a leak of internals.
    */
   opponentNames?: ReadonlyMap<string, string>;
+  /**
+   * What this agent has written about the agents it is sitting with, by agent
+   * id. Absent for the control arm, which plays remembering nobody.
+   */
+  notes?: ReadonlyMap<string, string>;
   provider: ModelProvider;
   queue: ModelQueue;
   equitySamples?: number;
@@ -120,7 +142,7 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
     legal,
     bigBlind: options.bigBlind,
     position: positionName(state, seatIndex),
-    opponents: describeOpponents(state, seatIndex, options.opponentNames ?? new Map()),
+    opponents: describeOpponents(state, seatIndex, options.opponentNames ?? new Map(), options.notes ?? new Map()),
     equity,
     read,
     clockSeconds: Math.round(clockMs / 1000),
@@ -187,6 +209,76 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
   };
 }
 
+export interface ReviseNotesOptions {
+  agent: AgentIdentity;
+  /** The hand as it played out, one line per beat, in order. */
+  hand: string[];
+  opponents: NoteSubject[];
+  clockMs: number;
+  provider: ModelProvider;
+  queue: ModelQueue;
+  signal?: AbortSignal;
+}
+
+/**
+ * The second request of a hand the agent asked to remember, made once the hand
+ * is over and the cards that were shown are known.
+ *
+ * A failure here is silent by design. The agent keeps the notes it already had,
+ * which is the same position it would be in having written nothing, so a
+ * provider hiccup costs a memory rather than a hand.
+ */
+export async function reviseNotes(options: ReviseNotesOptions): Promise<{
+  updates: NoteUpdate[];
+  failure: string | null;
+}> {
+  const { agent, provider, queue } = options;
+  if (options.opponents.length === 0) return { updates: [], failure: null };
+
+  const clock = new AbortController();
+  const timer = setTimeout(() => clock.abort(new ClockExpired()), options.clockMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, clock.signal]) : clock.signal;
+
+  try {
+    const text = await queue.run(async (apiKey) => {
+      let reply = '';
+      for await (const chunk of provider.stream(
+        {
+          system: NOTE_SYSTEM_PROMPT,
+          user: buildNotePrompt({
+            agentName: agent.name,
+            instructions: agent.instructions,
+            hand: options.hand,
+            opponents: options.opponents,
+            maxNote: MAX_NOTE,
+          }),
+          maxOutputTokens: MAX_OUTPUT_TOKENS,
+          // Lower than the table, deliberately. A note is a record of what
+          // happened, and creativity in it is just an unreliable memory.
+          temperature: 0.4,
+        },
+        apiKey,
+        signal,
+      )) {
+        reply += chunk;
+      }
+      return reply;
+    }, signal);
+
+    return {
+      updates: validateNotes(extractJson(text), options.opponents.map((opponent) => opponent.name)),
+      failure: null,
+    };
+  } catch (error) {
+    return {
+      updates: [],
+      failure: clock.signal.aborted ? 'ran out of time' : describeError(error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 class ClockExpired extends Error {}
 
 /**
@@ -225,7 +317,12 @@ function sampleCount(boardSize: number): number {
   return 1000;
 }
 
-function describeOpponents(state: HandState, seatIndex: number, names: ReadonlyMap<string, string>): OpponentView[] {
+function describeOpponents(
+  state: HandState,
+  seatIndex: number,
+  names: ReadonlyMap<string, string>,
+  notes: ReadonlyMap<string, string>,
+): OpponentView[] {
   const lastAction = new Map<number, { action: string; to: number }>();
   for (const event of state.events) {
     if (event.type === 'action') lastAction.set(event.seat, { action: event.action, to: event.to });
@@ -239,6 +336,7 @@ function describeOpponents(state: HandState, seatIndex: number, names: ReadonlyM
       committed: seat.committed,
       status: seat.folded ? 'folded' : seat.allIn ? 'all-in' : 'in',
       lastAction: lastAction.get(seat.index)?.action ?? null,
+      note: notes.get(seat.agentId) ?? null,
       // Timing is filled in by the runtime, which is the only layer that knows
       // how long a seat actually took. Opponents see the duration, never the cause.
       lastActionMs: null,

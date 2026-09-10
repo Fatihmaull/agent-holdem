@@ -3,15 +3,17 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ThinkingPanel, type BrainState } from './thinking-panel';
-import { useTableStream } from './use-table-stream';
+import { useMatchStream } from './use-match-stream';
 import { Badge, Card, LiveBadge } from './ui';
 
 interface ReplayDecision {
   seatIndex: number;
   street: string;
-  equity: number;
+  /** Null for a hand that was mucked. The table did not show it, so neither does this. */
+  equity: number | null;
   handRead: { made: string; flushDraw: boolean; openEnded: boolean; gutshot: boolean; overcards: boolean } | null;
-  reasoning: string;
+  reasoning: string | null;
+  mucked: boolean;
   action: string;
   amount: number;
   elapsedMs: number;
@@ -20,10 +22,10 @@ interface ReplayDecision {
 
 type Feed =
   | { mode: 'loading' }
-  | { mode: 'live'; tableId: string }
+  | { mode: 'live'; matchId: string }
   | {
       mode: 'replay';
-      tableId: string;
+      matchId: string;
       handNumber: number;
       lineup: Array<{ seatIndex: number; name: string }>;
       decisions: ReplayDecision[];
@@ -55,17 +57,21 @@ export function HeroPreview() {
     };
   }, []);
 
-  const live = useTableStream(feed.mode === 'live' ? feed.tableId : null);
+  const live = useMatchStream(feed.mode === 'live' ? feed.matchId : null);
 
-  const count = feed.mode === 'replay' ? feed.decisions.length : 0;
+  // Only the decisions of hands that were actually shown. A mucked hand comes
+  // back with its reasoning withheld, which makes for an empty panel, and the
+  // hero is meant to be a worked example rather than a redacted one.
+  const shown = feed.mode === 'replay' ? feed.decisions.filter((decision) => !decision.mucked) : [];
+  const count = shown.length;
   useEffect(() => {
     if (count === 0) return;
     const timer = setInterval(() => setStep((current) => (current + 1) % count), 4200);
     return () => clearInterval(timer);
   }, [count]);
 
-  const brain = build(feed, live, step);
-  const tableId = feed.mode === 'live' || feed.mode === 'replay' ? feed.tableId : null;
+  const brain = build(feed, shown, live, step);
+  const matchId = feed.mode === 'live' || feed.mode === 'replay' ? feed.matchId : null;
 
   return (
     <Card className="flex min-h-[30rem] flex-col overflow-hidden">
@@ -86,16 +92,16 @@ export function HeroPreview() {
         <ThinkingPanel
           brain={brain}
           deadline={feed.mode === 'live' ? (live.table?.deadline ?? null) : null}
-          footnote={footnote(feed, step)}
+          footnote={footnote(feed, shown, step)}
         />
       </div>
 
-      {tableId ? (
+      {matchId ? (
         <Link
-          href={`/table/${tableId}`}
+          href={`/match/${matchId}`}
           className="shrink-0 border-t border-line px-4 py-2.5 text-[0.8125rem] font-medium text-accent transition-colors hover:bg-surface-2"
         >
-          Open this table →
+          Watch this match →
         </Link>
       ) : null}
     </Card>
@@ -124,7 +130,12 @@ const SAMPLE: BrainState = {
   elapsedMs: 4300,
 };
 
-function build(feed: Feed, live: ReturnType<typeof useTableStream>, step: number): BrainState | null {
+function build(
+  feed: Feed,
+  shown: ReplayDecision[],
+  live: ReturnType<typeof useMatchStream>,
+  step: number,
+): BrainState | null {
   if (feed.mode === 'live') {
     const brain = live.table?.brain;
     if (!brain) return null;
@@ -146,13 +157,13 @@ function build(feed: Feed, live: ReturnType<typeof useTableStream>, step: number
     };
   }
 
-  if (feed.mode === 'replay' && feed.decisions.length > 0) {
-    const decision = feed.decisions[step % feed.decisions.length];
+  if (feed.mode === 'replay' && shown.length > 0) {
+    const decision = shown[step % shown.length];
     return {
       seatName: feed.lineup.find((entry) => entry.seatIndex === decision.seatIndex)?.name ?? null,
       color: null,
       street: decision.street,
-      reasoning: decision.reasoning,
+      reasoning: decision.reasoning ?? '',
       streaming: false,
       equity: decision.equity,
       potOdds: null,
@@ -166,17 +177,21 @@ function build(feed: Feed, live: ReturnType<typeof useTableStream>, step: number
     };
   }
 
-  if (feed.mode === 'empty') return SAMPLE;
+  // Nothing was tabled in the last hand, so there is nothing honest to replay.
+  if (feed.mode === 'empty' || feed.mode === 'replay') return SAMPLE;
   return null;
 }
 
-function footnote(feed: Feed, step: number): string | null {
+function footnote(feed: Feed, shown: ReplayDecision[], step: number): string | null {
   if (feed.mode === 'loading') return 'Looking for a table that is dealing…';
   if (feed.mode === 'empty') return 'A written example. No hands have been dealt yet.';
   if (feed.mode === 'replay') {
-    return feed.decisions.length > 0
-      ? `Decision ${(step % feed.decisions.length) + 1} of ${feed.decisions.length}, hand ${feed.handNumber}`
-      : 'That hand finished without a recorded decision.';
+    // Says which hand, and does not pretend the mucked seats were not there.
+    const mucked = feed.decisions.length - shown.length;
+    if (shown.length === 0) return 'Every hand in that one was mucked, so here is a written example instead.';
+
+    const tail = mucked > 0 ? `, ${mucked} more from hands that were mucked` : '';
+    return `Decision ${(step % shown.length) + 1} of ${shown.length}, hand ${feed.handNumber}${tail}`;
   }
   return null;
 }

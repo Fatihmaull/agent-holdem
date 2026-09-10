@@ -108,29 +108,6 @@ export const chipVaultAbi = [
   },
   {
     "type": "function",
-    "name": "payout",
-    "inputs": [
-      {
-        "name": "recipient",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "redemptionId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "pendingOwner",
     "inputs": [],
     "outputs": [
@@ -138,25 +115,6 @@ export const chipVaultAbi = [
         "name": "",
         "type": "address",
         "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "redemptionPaid",
-    "inputs": [
-      {
-        "name": "redemptionId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "paid",
-        "type": "bool",
-        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
@@ -328,31 +286,6 @@ export const chipVaultAbi = [
   },
   {
     "type": "event",
-    "name": "PaidOut",
-    "inputs": [
-      {
-        "name": "recipient",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "redemptionId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "Swept",
     "inputs": [
       {
@@ -427,17 +360,6 @@ export const chipVaultAbi = [
     "type": "error",
     "name": "NotPendingOwner",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "RedemptionAlreadyPaid",
-    "inputs": [
-      {
-        "name": "redemptionId",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ]
   },
   {
     "type": "error",
