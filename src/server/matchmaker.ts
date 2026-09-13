@@ -1,11 +1,12 @@
-import { MAX_SEATS, MIN_SEATS } from '../lib/economy';
-import { linkFor, readyAgentIds } from './presence';
+import { MAX_SEATS, MIN_SEATS, SEAT_COST, formatChips } from '../lib/economy';
+import { linkFor, readyAgents } from './presence';
 import { closeMatch, openMatch } from './registry';
 import { conservative } from '../lib/rating';
 import {
   createMatch,
   liveMatchIds,
   queuedAgents,
+  seatingStatus,
   settleMatch,
   type Candidate,
   type MatchEnding,
@@ -66,10 +67,32 @@ export function startMatchmaker(): void {
   if (state.timer) return;
 
   state.timer = setInterval(() => {
-    void tick().catch((error) => console.error('[matchmaker] tick failed', error));
+    void guardedTick();
   }, TICK_MS);
 
-  void tick().catch((error) => console.error('[matchmaker] first tick failed', error));
+  void guardedTick();
+}
+
+/**
+ * One tick at a time.
+ *
+ * A tick reads the queue and then seats it, and seating is several writes. If
+ * one ran long enough to overlap the next, both would read the same agents as
+ * unseated and both would charge them for a seat, because the row that would
+ * have stopped it is written by the transaction still in flight.
+ */
+let ticking = false;
+
+async function guardedTick(): Promise<void> {
+  if (ticking) return;
+  ticking = true;
+  try {
+    await tick();
+  } catch (error) {
+    console.error('[matchmaker] tick failed', error);
+  } finally {
+    ticking = false;
+  }
 }
 
 export function stopMatchmaker(): void {
@@ -107,10 +130,22 @@ async function tick(): Promise<void> {
   // Readiness is a fact about the sockets this process holds, so it is read
   // from the connections rather than from a column. An agent that is not here
   // cannot be seated, because a match cannot be left once it starts.
-  const ready = readyAgentIds();
-  if (ready.length < MIN_SEATS) return;
+  const ready = readyAgents();
 
-  const waiting = await queuedAgents(ready);
+  // Before the gate below, not after. An agent whose owner cannot cover a seat
+  // is dropped from the queue query in silence, and the one thing worse than
+  // not being seated is not being told why: the agent says ready, the arena
+  // says nothing, and no match ever arrives.
+  await explain([...ready.keys()]);
+
+  if (ready.size < MIN_SEATS) return;
+
+  // Longest wait first, measured from when each agent asked rather than from
+  // anything the database remembers about it.
+  const waiting = (await queuedAgents([...ready.keys()]))
+    .map((candidate) => ({ ...candidate, waitingSince: ready.get(candidate.agentId) ?? Date.now() }))
+    .sort((a, b) => a.waitingSince - b.waitingSince);
+
   if (waiting.length < MIN_SEATS) return;
 
   for (const group of groupsFrom(waiting)) {
@@ -123,6 +158,47 @@ async function tick(): Promise<void> {
 }
 
 /**
+ * What each connected agent was last told about why it is waiting.
+ *
+ * Kept so the answer is sent when it changes rather than every few seconds. An
+ * agent that is refused once and then hears nothing knows where it stands; one
+ * told the same sentence twelve times a minute is being flooded by the arena
+ * that caps how often it may speak.
+ */
+const told = new Map<string, string>();
+
+async function explain(ready: readonly string[]): Promise<void> {
+  const statuses = await seatingStatus(ready);
+  const present = new Set(ready);
+  for (const agentId of told.keys()) if (!present.has(agentId)) told.delete(agentId);
+
+  for (const status of statuses) {
+    // Playing, so its own match is the answer to why it is not in another one.
+    if (status.playing) continue;
+
+    const reason =
+      status.chips < SEAT_COST
+        ? `A seat costs ${formatChips(SEAT_COST)} chips and this account holds ${formatChips(status.chips)}. Claim more on the account page, or buy in.`
+        : '';
+
+    const previous = told.get(status.agentId);
+    if (previous === reason) continue;
+    told.set(status.agentId, reason);
+
+    // Nothing to say the socket has not already said. An agent that asks to be
+    // queued is told so when it asks; repeating it on the first tick is one
+    // more frame that means nothing.
+    if (previous === undefined && reason === '') continue;
+
+    linkFor(status.agentId)?.send(
+      reason === ''
+        ? { type: 'queued', queued: true, reason: null }
+        : { type: 'queued', queued: false, reason },
+    );
+  }
+}
+
+/**
  * Splits the queue into the matches that should start right now.
  *
  * Whoever has waited longest anchors a table, and the band is drawn around
@@ -130,15 +206,17 @@ async function tick(): Promise<void> {
  * waiting forever for a neighbour who never arrives. A group that is not yet
  * full and has not waited long enough is left in the queue to try again.
  */
-function groupsFrom(waiting: readonly Candidate[], now = Date.now()): Candidate[][] {
+type Entrant = Candidate & { waitingSince: number };
+
+function groupsFrom(waiting: readonly Entrant[], now = Date.now()): Entrant[][] {
   // Longest wait first: the queue is already in that order, and rebuilding it
   // by rating would quietly prioritise whoever happened to rate highest.
   const pool = [...waiting];
-  const groups: Candidate[][] = [];
+  const groups: Entrant[][] = [];
 
   while (pool.length >= MIN_SEATS) {
     const anchor = pool.shift()!;
-    const waited = now - anchor.waitingSince.getTime();
+    const waited = now - anchor.waitingSince;
     const band = BAND_START + (waited / 60_000) * BAND_GROWTH_PER_MINUTE;
 
     const group = [anchor];

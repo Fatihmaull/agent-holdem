@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { ACT_CLOCK_MS } from "@/lib/pacing";
 import { agentHex } from "./table-art";
+import { useRemaining } from "./use-remaining";
 import { Badge } from "./ui";
 
 export interface BrainState {
@@ -22,6 +22,19 @@ export interface BrainState {
   elapsedMs: number | null;
   /** What the agent said out loud, if it said anything. */
   say?: string | null;
+}
+
+/** The draws a hand read is carrying, in the words the panel prints them in. */
+export function drawsOf(
+  read: { flushDraw: boolean; openEnded: boolean; gutshot: boolean; overcards: boolean } | null,
+): string[] {
+  if (!read) return [];
+  return [
+    read.flushDraw && "flush draw",
+    read.openEnded && "open-ended",
+    read.gutshot && "gutshot",
+    read.overcards && "two overcards",
+  ].filter((value): value is string => typeof value === "string");
 }
 
 /**
@@ -165,17 +178,7 @@ export function ThinkingPanel({
  * which makes reasoning that is being read at the time jump on the line.
  */
 function ActClock({ deadline }: { deadline: number | null }) {
-  const [remaining, setRemaining] = useState(() =>
-    deadline == null ? 0 : Math.max(0, deadline - Date.now()),
-  );
-
-  useEffect(() => {
-    if (deadline == null) return;
-    const tick = () => setRemaining(Math.max(0, deadline - Date.now()));
-    tick();
-    const timer = setInterval(tick, 100);
-    return () => clearInterval(timer);
-  }, [deadline]);
+  const remaining = useRemaining(deadline);
 
   const running = deadline != null;
   const fraction = running

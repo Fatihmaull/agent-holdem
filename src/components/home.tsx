@@ -11,7 +11,7 @@ import { Button, ButtonLink, Card, SectionHeading, Stat } from './ui';
 
 /**
  * Home has one job: make a stranger understand the loop before they scroll.
- * You write instructions, an agent plays with them, you read what it decided.
+ * You connect an agent, the arena seats it, you read what it decided.
  *
  * Once you are signed in that pitch is over, so the hero is replaced by the
  * state of your own agent and the page becomes a dashboard.

@@ -6,7 +6,7 @@ import { formatChips } from "@/lib/economy";
 import type { TableView } from "@/server/view";
 import { useAccount } from "./account-context";
 import { Felt } from "./felt";
-import { ThinkingPanel, type BrainState } from "./thinking-panel";
+import { ThinkingPanel, drawsOf, type BrainState } from "./thinking-panel";
 import { ChipDot, DealerButton, agentHex } from "./table-art";
 import { seatLabel, useMatchStream } from "./use-match-stream";
 import { useLobby } from "./use-lobby";
@@ -340,16 +340,6 @@ function LogPanel({ table }: { table: TableView | null }) {
       )}
     </div>
   );
-}
-
-function drawsOf(read: NonNullable<TableView["brain"]>["handRead"]): string[] {
-  if (!read) return [];
-  return [
-    read.flushDraw && "flush draw",
-    read.openEnded && "open-ended",
-    read.gutshot && "gutshot",
-    read.overcards && "two overcards",
-  ].filter((value): value is string => typeof value === "string");
 }
 
 function clock(at: number): string {

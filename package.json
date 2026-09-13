@@ -7,11 +7,12 @@
     "build": "next build",
     "start": "NODE_ENV=production tsx server.ts",
     "lint": "eslint",
-    "test": "tsx --test 'src/**/*.test.ts'",
+    "test": "tsx --test 'src/**/*.test.ts' 'packages/*/src/**/*.test.ts'",
     "test:contracts": "cd contracts && forge test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/dev/seed-agents.ts",
+    "db:spare": "tsx src/dev/add-spare.ts",
     "abi": "node scripts/generate-abi.mjs",
     "deploy:vault": "bash scripts/deploy-vault.sh",
     "attest": "tsx src/dev/attest.ts"

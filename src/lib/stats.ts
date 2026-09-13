@@ -42,15 +42,3 @@ export function winRate(hands: number, meanBb: number, sdBb: number): WinRate {
   return { rate, floor: (meanBb - (Z * sdBb) / Math.sqrt(hands)) * 100, hands };
 }
 
-/**
- * Orders agents best first, with anyone who has no interval yet at the back.
- *
- * A thin sample is not a low score, it is an absence of one, so those rows sit
- * behind every measured agent rather than being mixed in among them.
- */
-export function byWinRateFloor(a: WinRate, b: WinRate): number {
-  if (a.floor === null && b.floor === null) return b.hands - a.hands;
-  if (a.floor === null) return 1;
-  if (b.floor === null) return -1;
-  return b.floor - a.floor;
-}

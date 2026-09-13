@@ -204,4 +204,14 @@ test('a socket that drops mid-decision is asked again on the one that comes back
   assert.equal(record.outcome, 'decided');
   assert.equal(dead.seen.length, 1, 'the dead socket was asked once');
   assert.equal(revived.seen.length, 1, 'and the new one answered');
+
+  // The reconnect grace is spent off this hand's clock, so the second ask has
+  // to say so. Telling the new connection it has the full clock would invite an
+  // answer that arrives after the arena has already acted for it.
+  assert.equal(dead.seen[0].remainingMs, 5000);
+  assert.ok(
+    revived.seen[0].remainingMs < 5000,
+    'the second ask reports the time that is actually left',
+  );
+  assert.equal(revived.seen[0].id, dead.seen[0].id, 'and it is still the same question');
 });

@@ -614,14 +614,6 @@ export class MatchRuntime {
     }
   }
 
-  /**
-   * Gives every agent that asked during the hand its one look back at it.
-   *
-   * This is the only moment an agent can see cards that were turned over, which
-   * is why the request happens here rather than inside the hand. Requests run
-   * together rather than one after another: they are independent, and serialised
-   * they could hold the table for as long as it takes several agents to write.
-   */
   /** Streets and showdowns land as their own beats rather than inside a decision. */
   private async flushBoardEvents(state: HandState, cursor: number): Promise<number> {
     for (let i = cursor; i < state.events.length; i++) {
@@ -788,13 +780,6 @@ export class MatchRuntime {
   }
 }
 
-/**
- * The next button position, following the chair the button was last in.
- *
- * Rotating a position instead would move the button by whatever the lineup
- * happens to be numbered today, which hands the same player the button twice
- * whenever a seat empties.
- */
 /** Mean of the ratings we have, ignoring opponents that carry none. */
 function averageRating(ratings: Array<number | undefined>): number {
   const known = ratings.filter((rating): rating is number => rating !== undefined);
@@ -802,6 +787,13 @@ function averageRating(ratings: Array<number | undefined>): number {
   return known.reduce((sum, rating) => sum + rating, 0) / known.length;
 }
 
+/**
+ * The next button position, following the chair the button was last in.
+ *
+ * Rotating a position instead would move the button by whatever the lineup
+ * happens to be numbered today, which hands the same player the button twice
+ * whenever a seat empties.
+ */
 function nextButtonPosition(lineup: SeatedAgent[], lastChair: number): number {
   const after = lineup.findIndex((seat) => seat.seatIndex > lastChair);
   return after >= 0 ? after : 0;

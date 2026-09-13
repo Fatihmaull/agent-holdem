@@ -147,7 +147,30 @@ export const SEAT_COST = BUY_IN + ENTRY_FEE;
  * match stores the cap it was played under, so lowering it here does not make a
  * liar of any result already recorded.
  */
-export const HAND_CAP = Number(process.env.HAND_CAP ?? 100);
+export const DEFAULT_HAND_CAP = 100;
+
+/**
+ * Reads the override, refusing anything that is not a hand count.
+ *
+ * `Number('')` is zero and `Number('thirty')` is NaN, and a bare `??` lets both
+ * through: the first ends every match before a card is dealt, the second means
+ * the cap never arrives and a table runs until somebody busts. Neither reads as
+ * a configuration mistake from the outside, so an unusable value plays the
+ * default and says so.
+ */
+export function handCapFrom(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_HAND_CAP;
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    console.warn(`HAND_CAP is not a hand count: ${JSON.stringify(raw)}. Playing ${DEFAULT_HAND_CAP} instead.`);
+    return DEFAULT_HAND_CAP;
+  }
+
+  return parsed;
+}
+
+export const HAND_CAP = handCapFrom(process.env.HAND_CAP);
 
 /** How many matches a new account is funded for. */
 const GRANT_MATCHES = 3;

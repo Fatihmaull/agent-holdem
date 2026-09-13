@@ -11,7 +11,7 @@ import { allMatches } from '@/server/registry';
  * exactly what mucking withholds, to anyone who asks for it in a browser: the
  * opponents from that hand are usually still sitting at the same table, and an
  * owner who learns what one of them folded can write it straight into their own
- * agent's instructions. What each agent did is public. What it was holding when
+ * agent. What each agent did is public. What it was holding when
  * it declined to show is not.
  */
 export async function GET(): Promise<Response> {

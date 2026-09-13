@@ -121,7 +121,7 @@ const OWNER_CLOSE = '--- END OWNER TEXT ---';
  * never an illegal play, but the model would have been lied to about who was
  * speaking.
  */
-export function fenced(strategy: string): string {
+function fenced(strategy: string): string {
   const text = strategy.trim();
   if (!text) return 'No strategy given. Play a solid, straightforward game.';
 

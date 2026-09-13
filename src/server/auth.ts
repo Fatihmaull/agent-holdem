@@ -193,8 +193,3 @@ export async function signOut(): Promise<void> {
   const jar = await cookies();
   jar.delete(SESSION_COOKIE);
 }
-
-/** Short, stable, and never the raw address. Suggested when adding an agent. */
-export function defaultAgentName(address: string): string {
-  return `Agent ${address.slice(2, 6).toUpperCase()}`;
-}

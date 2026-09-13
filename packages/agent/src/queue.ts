@@ -42,12 +42,6 @@ export class ModelQueue {
     this.lastRefill = now();
   }
 
-  /** How many requests could start right now. */
-  get available(): number {
-    this.refill();
-    return Math.floor(this.tokens);
-  }
-
   async acquire(signal?: AbortSignal): Promise<LeasedKey> {
     while (true) {
       signal?.throwIfAborted();

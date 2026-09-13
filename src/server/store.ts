@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql as raw } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql as raw } from 'drizzle-orm';
 
 import { db } from '../db/client';
 import {
@@ -107,6 +107,29 @@ export async function balanceOf(userId: string): Promise<number> {
   return row?.chips ?? 0;
 }
 
+/**
+ * Why each connected agent is not in a match, when it is not.
+ *
+ * The queue query below silently drops anyone who cannot cover a seat, which is
+ * correct for matchmaking and useless to the owner: their agent says it is
+ * ready, the arena says nothing, and no match ever comes. This returns the same
+ * facts unfiltered so the matchmaker can say so on the socket.
+ */
+export async function seatingStatus(
+  readyIds: readonly string[],
+): Promise<Array<{ agentId: string; chips: number; playing: boolean }>> {
+  if (readyIds.length === 0) return [];
+
+  const rows = await db
+    .select({ agentId: agents.id, chips: users.chips, seatId: seats.id })
+    .from(agents)
+    .innerJoin(users, eq(users.id, agents.userId))
+    .leftJoin(seats, eq(seats.agentId, agents.id))
+    .where(inArray(agents.id, [...readyIds]));
+
+  return rows.map((row) => ({ agentId: row.agentId, chips: row.chips, playing: row.seatId !== null }));
+}
+
 export interface Candidate {
   agentId: string;
   name: string;
@@ -114,7 +137,6 @@ export interface Candidate {
   rating: Rating;
   /** The published figure, which is what the bands are drawn on. */
   published: number;
-  waitingSince: Date;
 }
 
 /**
@@ -125,8 +147,9 @@ export interface Candidate {
  * because only the process holding the sockets knows, and this adds the two
  * conditions the database owns: not already seated, and able to cover a seat.
  *
- * Ordered by how long they have waited, so the matchmaker widens a band around
- * whoever has waited longest rather than whoever it read first.
+ * How long each has waited is deliberately not answered here. A row's mtime is
+ * whatever last touched it, and the only thing that knows when an agent asked
+ * for a game is the socket it asked on.
  */
 export async function queuedAgents(readyIds: readonly string[]): Promise<Candidate[]> {
   if (readyIds.length === 0) return [];
@@ -138,7 +161,6 @@ export async function queuedAgents(readyIds: readonly string[]): Promise<Candida
       ownerId: users.id,
       mu: agents.ratingMu,
       sigma: agents.ratingSigma,
-      waitingSince: agents.updatedAt,
     })
     .from(agents)
     .innerJoin(users, eq(users.id, agents.userId))
@@ -149,8 +171,7 @@ export async function queuedAgents(readyIds: readonly string[]): Promise<Candida
         isNull(seats.id),
         raw`${users.chips} >= ${SEAT_COST}`,
       ),
-    )
-    .orderBy(asc(agents.updatedAt));
+    );
 
   return rows.map((row) => {
     const rating: Rating = { mu: row.mu, sigma: row.sigma };
@@ -160,7 +181,6 @@ export async function queuedAgents(readyIds: readonly string[]): Promise<Candida
       ownerId: row.ownerId,
       rating,
       published: conservative(rating),
-      waitingSince: row.waitingSince,
     };
   });
 }

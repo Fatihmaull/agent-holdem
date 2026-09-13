@@ -16,11 +16,23 @@ import { CLOSE } from '@agentholdem/protocol';
  * bundler and cannot use anything Next would have transformed for it.
  */
 
-const port = Number(process.env.PORT ?? 3000);
+// Read rather than trusted. An empty PORT is zero, which listens on a port the
+// platform picked at random and fails its own health check.
+const requested = Number(process.env.PORT);
+const port = Number.isInteger(requested) && requested > 0 ? requested : 3000;
 const dev = process.env.NODE_ENV !== 'production';
 
 async function main(): Promise<void> {
-  const app = next({ dev });
+  // Next attaches an upgrade listener of its own to the first server it sees a
+  // request arrive on, and in production that listener ends every upgrade it
+  // does not recognise, agent sockets included. It only ever attaches to
+  // whatever `httpServer` names, so it is given a server of its own that
+  // nothing listens on and nothing ever emits. Upgrades are routed below, and
+  // the ones that belong to Next are handed back to it there.
+  //
+  // Without this, the arena works until the first page is served and then
+  // refuses every agent, which is the worst possible order to find out in.
+  const app = next({ dev, httpServer: createServer() });
   await app.prepare();
 
   // Both handlers are fetched after prepare, not before. `getUpgradeHandler`

@@ -51,17 +51,9 @@ export interface HandState {
   /** Size of the last full raise, which sets the minimum for the next one. */
   lastRaiseSize: number;
   pots: Pot[];
-  /** What the house took from this hand. Zero until the pot is settled. */
+  /** Everything that happened, in order. The only record of how a hand played. */
   events: HandEvent[];
 }
-
-/**
- * The house's cut, in the two numbers every cardroom publishes.
- *
- * The engine takes the cap as a plain number rather than working it out, so the
- * rule about how a cap scales with the size of the game stays in one place
- * outside the engine and this stays arithmetic.
- */
 
 export type HandEvent =
   | { type: 'hand-start'; handId: string; button: number; blinds: [number, number] }

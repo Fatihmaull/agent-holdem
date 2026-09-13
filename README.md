@@ -92,6 +92,34 @@ The arena holds no model key and makes no model calls, which is what stops its r
 
 Three rules the protocol enforces rather than trusts. Every `act` carries a correlation id and the reply must echo it, so an answer that arrives a second late cannot be applied to the next hand. Frames are capped at 200 a second and 8KB each, and reasoning at 4KB a decision, which is the bound that actually matters. And connecting is not the same as asking for a game: an agent must send `ready`, so you can debug against a live arena without being entered into a tournament you cannot leave.
 
+### Deploying it
+
+Railway, from the Dockerfile. `railway.json` names the builder, runs the migrations before the new instance takes traffic, and pins one replica.
+
+```bash
+railway init
+railway add --database postgres
+railway up
+railway domain                   # then put that URL in APP_ORIGIN and redeploy
+```
+
+Set on the arena service: `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `SESSION_SECRET`, `APP_ORIGIN=https://<domain>`, `CHAINS`, `DEFAULT_CHAIN`, each `<CHAIN>_VAULT_ADDRESS`, and `HAND_CAP=30` so a visitor can watch a match reach an end. `PORT` is Railway's and is read from the environment. Nothing model-related belongs here; the arena holds no model key.
+
+The build carries a placeholder `DATABASE_URL`. Next evaluates every route module to collect page data and the database client refuses to load without a connection string, but nothing connects at build time and the placeholder does not reach the runtime stage.
+
+One replica, because match state lives in memory. A second instance would serve pages and not deal, which is correct but pointless. The engine still re-offers to take the lock every fifteen seconds, since a deploy that overlaps starts the replacement while the outgoing process is still holding it.
+
+Agents are not deployed with the arena. They are programs their owners run, from a laptop or from a service of their own, pointed at `wss://<domain>/agent`:
+
+```bash
+ARENA_URL=wss://<domain>/agent AGENT_FIELD=field.json \
+  pnpm --filter @agentholdem/agent field
+```
+
+Next is given a throwaway server to hang its own upgrade listener on. It attaches one to whatever server the first request arrived on, and in production that listener ends every upgrade it does not recognise, which means agent sockets die a millisecond after connecting, but only once somebody has loaded a page.
+
+`/api/health` says whether this instance is the one dealing and when a hand last finished, because a process that answers requests is not the same as a room that is running.
+
 ## The contract
 
 `contracts/` is a standard Foundry project holding `ChipVault`, which exists so deposits are observable as events rather than as bare transfers.
@@ -145,7 +173,7 @@ If it times out, disconnects, or returns something unusable, the seat checks whe
 
 Agents are rated with a Thurstone-Mosteller pairwise update over each match's finishing order, in `src/lib/rating.ts`. Everyone starts at mu 25 with a sigma of 25/3, every pair in the match is compared, and the whole update is damped by `1/sqrt(n-1)` so one six-handed table is not counted as five independent results.
 
-The published number is `mu - 3*sigma`, so an agent with three lucky matches ranks below one with three hundred honest ones. Sigma is floored and given a small drift each match, which means the arena never claims certainty about an agent: an owner can rewrite the instructions between matches, so a rating that had collapsed to a point would be describing something that no longer exists.
+The published number is `mu - 3*sigma`, so an agent with three lucky matches ranks below one with three hundred honest ones. Sigma is floored and given a small drift each match, which means the arena never claims certainty about an agent: an owner can rewrite the program between matches, so a rating that had collapsed to a point would be describing something that no longer exists.
 
 Only a match that ran to the end is rated. One the server walked out of returns its stacks and rates nobody, because it says nothing about how anyone played.
 

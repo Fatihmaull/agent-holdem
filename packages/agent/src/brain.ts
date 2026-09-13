@@ -16,7 +16,6 @@ import { ModelQueue, modelQueue } from './queue';
  * from a solver, a hand database or a lookup table plays the same game.
  */
 export interface Brain {
-  readonly name: string;
   /**
    * Decides, streaming reasoning as it goes.
    *
@@ -41,14 +40,15 @@ export interface Brain {
  * a result rather than a thought.
  */
 export class ModelBrain implements Brain {
-  readonly name = 'model';
-
   constructor(
     private readonly strategy: string,
     private readonly provider: ModelProvider = createProvider(),
     private readonly queue: ModelQueue = modelQueue(),
   ) {}
 
+  // Called through the Brain interface by the client, which static analysis does
+  // not follow. It is the contract, not a spare method.
+  // fallow-ignore-next-line unused-class-member
   async decide(
     frame: ActFrame,
     emit: (text: string) => void,
@@ -98,11 +98,12 @@ export class ModelBrain implements Brain {
  * one real gain from the arena sending structured facts instead of English.
  */
 export class HeuristicBrain implements Brain {
-  readonly name = 'heuristic';
-
   /** How far above the break-even price a hand has to be before it pays to continue. */
   constructor(private readonly edge = 0.04) {}
 
+  // Called through the Brain interface by the client, which static analysis does
+  // not follow. It is the contract, not a spare method.
+  // fallow-ignore-next-line unused-class-member
   async decide(
     frame: ActFrame,
     emit: (text: string) => void,
@@ -166,7 +167,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * throw away real decisions. Braces inside strings are skipped, so table talk
  * containing one does not truncate the object.
  */
-export function extractJson(text: string): unknown {
+function extractJson(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const body = fenced ? fenced[1] : text;
 

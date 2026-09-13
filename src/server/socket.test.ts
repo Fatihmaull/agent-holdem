@@ -99,6 +99,25 @@ test('connecting is not the same as asking for a game', () => {
   assert.equal(link.ready, false);
 });
 
+test('how long an agent has waited is measured from when it asked', () => {
+  // The matchmaker widens its rating band by this, so it has to mean waiting
+  // rather than last touched. An agent returning after a day away would
+  // otherwise arrive with a band wide enough to swallow the whole field.
+  const { ws, link } = linked();
+
+  assert.equal(link.readySince, null, 'a connection that has not asked is not waiting');
+
+  ws.receive({ type: 'ready' });
+  const asked = link.readySince;
+  assert.ok(asked !== null);
+
+  ws.receive({ type: 'ready' });
+  assert.equal(link.readySince, asked, 'saying it twice does not send it to the back of its own queue');
+
+  ws.receive({ type: 'stop' });
+  assert.equal(link.readySince, null);
+});
+
 test('a decision for the hand in flight is the one that counts', async () => {
   const { ws, link } = linked();
 

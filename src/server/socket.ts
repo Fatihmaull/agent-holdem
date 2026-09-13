@@ -192,6 +192,7 @@ interface Pending {
 
 export class SocketLink implements AgentLink {
   ready = false;
+  readySince: number | null = null;
 
   private pending: Pending | null = null;
   private framesThisSecond = 0;
@@ -285,12 +286,16 @@ export class SocketLink implements AgentLink {
         return;
 
       case 'ready':
+        // Stamped once. An agent that says ready twice has not gone to the back
+        // of its own queue, so the clock it has been waiting on keeps running.
+        this.readySince ??= Date.now();
         this.ready = true;
         this.send({ type: 'queued', queued: true, reason: null });
         return;
 
       case 'stop':
         this.ready = false;
+        this.readySince = null;
         // Never interrupts a match. A match cannot be walked out of, so this
         // stops the next one rather than the one being played.
         this.send({ type: 'queued', queued: false, reason: 'You asked to stop.' });
@@ -364,6 +369,7 @@ export class SocketLink implements AgentLink {
 
     clearInterval(this.heartbeat);
     this.ready = false;
+    this.readySince = null;
 
     // A hand waiting on this seat gets nothing, which the dealer already knows
     // how to handle: it checks if checking is free and folds if it is not.

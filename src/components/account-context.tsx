@@ -28,7 +28,7 @@ export interface AccountAgent {
   lastCloseReason: string | null;
 }
 
-export interface AccountState {
+interface AccountState {
   address: string;
   chips: number;
   agents: AccountAgent[];

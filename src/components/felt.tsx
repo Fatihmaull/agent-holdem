@@ -6,6 +6,7 @@ import { ACT_CLOCK_MS } from '@/lib/pacing';
 import type { SeatView, TableView } from '@/server/view';
 import { CardBack, CardSlot, DealerButton, PlayingCard, agentHex, type CardOrigin } from './table-art';
 import { seatLabel } from './use-match-stream';
+import { useRemaining } from './use-remaining';
 
 /**
  * The table itself: the cloth, the seats around it and the board in the middle.
@@ -811,24 +812,6 @@ function SeatRow({
       </div>
     </li>
   );
-}
-
-function useRemaining(deadline: number | null): number {
-  const [remaining, setRemaining] = useState(0);
-
-  useEffect(() => {
-    // Every seat calls this and only one of them is on the clock. Ticking for
-    // the other five is five timers running to report a number nobody reads.
-    if (!deadline) return;
-    const tick = () => setRemaining(Math.max(0, deadline - Date.now()));
-    tick();
-    const timer = setInterval(tick, 100);
-    return () => clearInterval(timer);
-  }, [deadline]);
-
-  // Read through rather than stored, so a seat that has stopped acting reports
-  // nothing left on the clock without waiting for a render to clear it.
-  return deadline ? remaining : 0;
 }
 
 /**

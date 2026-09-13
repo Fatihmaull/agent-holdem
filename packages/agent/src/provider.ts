@@ -105,24 +105,6 @@ class GeminiProvider implements ModelProvider {
   }
 }
 
-/** A provider that plays a fixed script. Used by tests, never wired into a table. */
-export class ScriptedProvider implements ModelProvider {
-  readonly name = 'scripted';
-
-  constructor(private readonly reply: string | (() => Promise<string>)) {}
-
-  // Reached only through the ModelProvider interface, so static analysis sees
-  // no direct caller. It is the contract, not a spare method.
-  // fallow-ignore-next-line unused-class-member
-  async *stream(_request: ModelRequest, _apiKey: string, signal: AbortSignal): AsyncIterable<string> {
-    const text = typeof this.reply === 'string' ? this.reply : await this.reply();
-    for (const word of text.split(/(?<=\s)/)) {
-      if (signal.aborted) throw new ProviderError('aborted');
-      yield word;
-    }
-  }
-}
-
 /**
  * A stand-in that plays by the numbers already in the prompt, so the whole
  * product runs with no API key at all.

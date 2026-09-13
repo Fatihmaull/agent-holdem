@@ -64,11 +64,3 @@ export function mulberry32(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
-/** Two hole cards in the shorthand players use: `AKs`, `AKo`, `77`. */
-export function holeShorthand(a: Card, b: Card): string {
-  const [hi, lo] = rankOf(a) >= rankOf(b) ? [a, b] : [b, a];
-  const ranks = RANKS[rankOf(hi)] + RANKS[rankOf(lo)];
-  if (rankOf(hi) === rankOf(lo)) return ranks;
-  return ranks + (suitOf(hi) === suitOf(lo) ? 's' : 'o');
-}

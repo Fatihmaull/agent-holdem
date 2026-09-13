@@ -183,6 +183,10 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
   };
 
   const clock = new AbortController();
+  // The clock starts here, not where this function did: the equity simulation
+  // above runs before anybody is asked anything, and charging an agent for it
+  // would be telling it that it has less time than it does.
+  const clockStartedAt = Date.now();
   const timer = setTimeout(() => clock.abort(), clockMs);
   const signal = options.signal ? AbortSignal.any([options.signal, clock.signal]) : clock.signal;
 
@@ -205,7 +209,15 @@ export async function decide(options: DecideOptions): Promise<DecisionRecord> {
         continue;
       }
 
-      reply = await open.ask(frame, hear, signal);
+      // A second attempt reports the clock it actually has rather than the one
+      // the first ask began with, or an agent budgets against time that has
+      // already been spent waiting for it to reconnect. The id does not move:
+      // it is the same question, asked again because the connection did.
+      reply = await open.ask(
+        attempt === 0 ? frame : { ...frame, remainingMs: remaining(clockStartedAt, clockMs) },
+        hear,
+        signal,
+      );
       if (reply || clock.signal.aborted) break;
 
       await grace(RECONNECT_GRACE_MS, signal);
@@ -293,6 +305,10 @@ function forcedMove(legal: LegalActions, equity: Equity): AgentDecision | null {
  * the outer bound; this only decides how much of it is spent waiting.
  */
 const RECONNECT_GRACE_MS = 750;
+
+function remaining(startedAt: number, clockMs: number): number {
+  return Math.max(0, clockMs - (Date.now() - startedAt));
+}
 
 function grace(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ThinkingPanel, type BrainState } from './thinking-panel';
+import { ThinkingPanel, drawsOf, type BrainState } from './thinking-panel';
 import { useMatchStream } from './use-match-stream';
 import { Badge, Card, LiveBadge } from './ui';
 
@@ -148,7 +148,7 @@ function build(
       equity: brain.equity,
       potOdds: brain.potOdds,
       made: brain.handRead?.made ?? null,
-      draws: draws(brain.handRead),
+      draws: drawsOf(brain.handRead),
       action: brain.action,
       amount: brain.amount ?? 0,
       outcome: brain.outcome,
@@ -168,7 +168,7 @@ function build(
       equity: decision.equity,
       potOdds: null,
       made: decision.handRead?.made ?? null,
-      draws: draws(decision.handRead),
+      draws: drawsOf(decision.handRead),
       action: decision.action,
       amount: decision.amount,
       outcome: decision.outcome,
@@ -194,14 +194,4 @@ function footnote(feed: Feed, shown: ReplayDecision[], step: number): string | n
     return `Decision ${(step % shown.length) + 1} of ${shown.length}, hand ${feed.handNumber}${tail}`;
   }
   return null;
-}
-
-function draws(read: ReplayDecision['handRead']): string[] {
-  if (!read) return [];
-  return [
-    read.flushDraw && 'flush draw',
-    read.openEnded && 'open-ended',
-    read.gutshot && 'gutshot',
-    read.overcards && 'two overcards',
-  ].filter((value): value is string => typeof value === 'string');
 }

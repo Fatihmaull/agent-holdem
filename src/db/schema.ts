@@ -220,7 +220,7 @@ export const ledgerEntries = pgTable(
  * One game, from the moment it is dealt to the moment it is rated.
  *
  * A match is the unit of everything now. Seats belong to it, hands belong to
- * it, notes belong to it, and it is what a rating is computed from. Once it
+ * it, and it is what a rating is computed from. Once it
  * starts nobody joins and nobody leaves, so the set of agents in it is fixed
  * for its whole life, which is what makes a finishing order mean anything.
  */

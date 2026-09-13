@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { formatChips } from '@/lib/economy';
 import { shortAddress } from '@/lib/wallet';
 import { useAccount } from './account-context';
@@ -105,15 +105,16 @@ export function SiteHeader() {
 }
 
 /**
- * Which network the player is on, and the way to change it.
+ * Closes an open menu on a click outside it or on Escape.
  *
- * It sits where the network badge used to, because it answers the same question
- * and now answers it with an action. A deployment offering one chain gets the
- * badge back rather than a menu with nothing to choose.
+ * A menu that stays open after you have clicked elsewhere is a menu you have to
+ * dismiss twice, so the document closes it and Escape does too. The ref it
+ * returns marks what counts as inside.
  */
-function ChainMenu() {
-  const { chains, chain, loading, switching, switchChain } = useChain();
-  const [open, setOpen] = useState(false);
+function useDismissed(
+  open: boolean,
+  setOpen: (open: boolean) => void,
+): RefObject<HTMLDivElement | null> {
   const wrapper = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -130,7 +131,22 @@ function ChainMenu() {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open]);
+  }, [open, setOpen]);
+
+  return wrapper;
+}
+
+/**
+ * Which network the player is on, and the way to change it.
+ *
+ * It sits where the network badge used to, because it answers the same question
+ * and now answers it with an action. A deployment offering one chain gets the
+ * badge back rather than a menu with nothing to choose.
+ */
+function ChainMenu() {
+  const { chains, chain, loading, switching, switchChain } = useChain();
+  const [open, setOpen] = useState(false);
+  const wrapper = useDismissed(open, setOpen);
 
   if (loading || !chain) return null;
 
@@ -208,25 +224,7 @@ function Suit() {
 
 function WalletMenu({ address, onSignOut }: { address: string; onSignOut: () => void }) {
   const [open, setOpen] = useState(false);
-  const wrapper = useRef<HTMLDivElement>(null);
-
-  // A menu that stays open after you have clicked elsewhere is a menu you have
-  // to dismiss twice, so the document closes it and Escape does too.
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
+  const wrapper = useDismissed(open, setOpen);
 
   return (
     <div ref={wrapper} className="relative">

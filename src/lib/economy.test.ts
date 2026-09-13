@@ -7,7 +7,9 @@ import {
   CHIP_PACKAGES,
   ENTRY_FEE,
   ENTRY_FEE_BPS,
+  DEFAULT_HAND_CAP,
   HAND_CAP,
+  handCapFrom,
   MATCH,
   MAX_SEATS,
   MIN_SEATS,
@@ -94,4 +96,18 @@ test('formats the native token without trailing noise', () => {
 test('a dollar hint is shown only where the chain carries a reference price', () => {
   assert.equal(formatUsd(chipsToWei(10_000), undefined), null, 'no rate means no figure, not a zero');
   assert.equal(formatUsd(chipsToWei(10_000), 600), '$60.00');
+});
+
+test('a hand cap that is not a hand count plays the default rather than an unplayable match', () => {
+  // Both of these reach the runtime as a number without complaint: an empty
+  // variable ends every match before a card is dealt, and a misspelled one
+  // never ends a match at all.
+  assert.equal(handCapFrom(''), DEFAULT_HAND_CAP);
+  assert.equal(handCapFrom('thirty'), DEFAULT_HAND_CAP);
+  assert.equal(handCapFrom('0'), DEFAULT_HAND_CAP);
+  assert.equal(handCapFrom('12.5'), DEFAULT_HAND_CAP);
+  assert.equal(handCapFrom(undefined), DEFAULT_HAND_CAP);
+
+  assert.equal(handCapFrom('30'), 30);
+  assert.equal(handCapFrom(' 30 '), 30);
 });

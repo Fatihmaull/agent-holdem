@@ -24,16 +24,16 @@ const TOKEN_BYTES = 32;
 /** Prefix so a leaked string is recognisable in a log or a public repository. */
 const TOKEN_PREFIX = 'ah_';
 
-export const MAX_AGENT_NAME = 24;
+const MAX_AGENT_NAME = 24;
 
 /** How many agents one account may register. */
-export const MAX_AGENTS_PER_ACCOUNT = 8;
+const MAX_AGENTS_PER_ACCOUNT = 8;
 
 function mint(): string {
   return `${TOKEN_PREFIX}${randomBytes(TOKEN_BYTES).toString('base64url')}`;
 }
 
-export function hashToken(token: string): string {
+function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 

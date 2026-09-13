@@ -62,8 +62,8 @@ export interface RatingConfig {
   /**
    * How much skill is assumed to drift between matches.
    *
-   * Kept higher than the usual default because an owner can rewrite an agent's
-   * instructions between matches. That is a real change in skill rather than
+   * Kept higher than the usual default because an agent is a program its owner
+   * can rewrite between matches. That is a real change in skill rather than
    * measurement noise, and a rating that had collapsed to certainty would take
    * far too long to notice it.
    */

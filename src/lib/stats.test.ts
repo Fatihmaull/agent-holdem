@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { byWinRateFloor, winRate } from './stats';
+import { winRate } from './stats';
 
 test('the rate is the per-hand average expressed per hundred hands', () => {
   assert.equal(winRate(1000, 0.05, 8).rate, 5);
@@ -37,16 +37,4 @@ test('too few hands has no interval, and no interval sorts last', () => {
   assert.equal(winRate(0, 0, 0).floor, null);
   // A sample with no spread has not been tested by anything.
   assert.equal(winRate(500, 0.05, 0).floor, null);
-
-  const measured = winRate(1000, -0.5, 8);
-  const unmeasured = winRate(1, 5, 0);
-
-  assert.ok([unmeasured, measured].sort(byWinRateFloor)[0] === measured, 'a losing record still beats no record');
-});
-
-test('among agents with no interval, the one that has played more comes first', () => {
-  const few = winRate(1, 0, 0);
-  const fewer = winRate(0, 0, 0);
-
-  assert.ok([fewer, few].sort(byWinRateFloor)[0] === few);
 });

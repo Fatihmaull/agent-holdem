@@ -19,6 +19,15 @@ export interface AgentLink {
   readonly ownerId: string;
   /** Whether it has asked to be queued. Connecting alone is not asking. */
   readonly ready: boolean;
+  /**
+   * When it asked, as epoch milliseconds, or null while it is not asking.
+   *
+   * The matchmaker widens its rating band by how long somebody has waited, so
+   * this has to mean "waiting since" and nothing else. Reading it off a row the
+   * database happened to touch last would hand an agent returning after a day
+   * away a band wide enough to swallow the whole field.
+   */
+  readonly readySince: number | null;
   /** Fire and forget. A closed socket swallows it rather than throwing. */
   send(frame: ServerFrame): void;
   /**
@@ -75,9 +84,18 @@ export function presenceOf(agentId: string): { connected: boolean; ready: boolea
   return { connected: link !== undefined, ready: link?.ready ?? false };
 }
 
-/** Every agent currently asking for a game. What the matchmaker draws from. */
-export function readyAgentIds(): string[] {
-  return [...registry().values()].filter((link) => link.ready).map((link) => link.agentId);
+/**
+ * Every agent currently asking for a game, and since when.
+ *
+ * What the matchmaker draws from. The timestamp travels with the id because the
+ * two are one fact: an agent is waiting, and it has been waiting this long.
+ */
+export function readyAgents(): Map<string, number> {
+  const waiting = new Map<string, number>();
+  for (const link of registry().values()) {
+    if (link.ready) waiting.set(link.agentId, link.readySince ?? Date.now());
+  }
+  return waiting;
 }
 
 /** How many sockets one account is holding. Used to cap them at the handshake. */
