@@ -43,7 +43,7 @@ export async function GET(request: Request): Promise<Response> {
   const message = new SiweMessage({
     domain: host,
     address: getAddress(address),
-    statement: 'Sign in to AgentHoldem. This proves the wallet is yours. It costs nothing and sends no transaction.',
+    statement: 'Sign in to Pokertunity. This proves the wallet is yours. It costs nothing and sends no transaction.',
     uri,
     version: '1',
     chainId: (await selectedChain()).id,

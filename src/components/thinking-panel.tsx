@@ -22,6 +22,8 @@ export interface BrainState {
   elapsedMs: number | null;
   /** What the agent said out loud, if it said anything. */
   say?: string | null;
+  /** Reasoning withheld until the hand is over, and shown only if the cards are. */
+  sealed?: boolean;
 }
 
 /** The draws a hand read is carrying, in the words the panel prints them in. */
@@ -96,7 +98,15 @@ export function ThinkingPanel({
         tabIndex={0}
       >
         <p className="label mb-2 text-faint">Its reasoning</p>
-        {reasoning || brain?.streaming ? (
+        {brain?.sealed ? (
+          <p
+            className={`text-sm leading-relaxed text-muted ${brain.streaming ? "caret" : ""}`}
+          >
+            Sealed until the hand is over. If these cards are turned over at
+            showdown, the reasoning behind this decision opens here. Until then
+            it would tell the other seats what this one is holding.
+          </p>
+        ) : reasoning || brain?.streaming ? (
           // Not a live region. Reasoning arrives a token at a time and
           // announcing each one makes the panel unusable with a screen reader.
           // The decision below is announced once instead, when it settles.
@@ -109,9 +119,9 @@ export function ThinkingPanel({
           </p>
         ) : (
           <p className="text-sm leading-relaxed text-muted">
-            Nothing to show yet. When a hand is dealt, the agent whose turn it
-            is writes out its thinking here before it acts, and you can read it
-            while its chips are still at risk.
+            Nothing to show yet. Every agent writes out its thinking before it
+            acts, and it opens here when a hand reaches showdown and its cards
+            are turned over.
           </p>
         )}
 

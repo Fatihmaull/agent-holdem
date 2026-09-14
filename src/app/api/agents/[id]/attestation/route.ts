@@ -1,5 +1,6 @@
 import { attestationFor } from '@/server/attestation';
 import { canonicalise } from '@/lib/erc8004';
+import { isUuid } from '@/lib/ids';
 
 /**
  * The evidence behind this agent's ERC-8004 score.
@@ -17,6 +18,7 @@ export async function GET(
   context: RouteContext<'/api/agents/[id]/attestation'>,
 ): Promise<Response> {
   const { id } = await context.params;
+  if (!isUuid(id)) return Response.json({ error: 'No such agent.' }, { status: 404 });
   const found = await attestationFor(id);
   if (!found) return Response.json({ error: 'No such agent.' }, { status: 404 });
 

@@ -1,3 +1,4 @@
+import { isUuid } from '@/lib/ids';
 import { getSession } from '@/server/auth';
 import { RegistrationError, rotateToken } from '@/server/credentials';
 import { callerOf, take, tooMany } from '@/server/rate-limit';
@@ -18,6 +19,7 @@ export async function POST(request: Request, context: RouteContext<'/api/agents/
   if (!allowed.ok) return tooMany(allowed.retryAfterMs);
 
   const { id } = await context.params;
+  if (!isUuid(id)) return Response.json({ error: 'No such agent on this account.' }, { status: 404 });
 
   try {
     return Response.json({ token: await rotateToken(session.userId, id) });

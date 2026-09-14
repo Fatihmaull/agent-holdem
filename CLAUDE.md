@@ -15,6 +15,7 @@ pnpm lint                     # eslint
 pnpm test                     # node test runner via tsx over src/**/*.test.ts and packages/*/src/**/*.test.ts
 pnpm exec tsx --test src/poker/engine.test.ts                    # one file
 pnpm exec tsx --test --test-name-pattern 'enforces the minimum raise' src/poker/engine.test.ts  # one test
+TEST_DATABASE_URL=postgres://…/pokertunity_test pnpm test      # also runs the ledger suite (src/server/money.test.ts)
 
 pnpm test:contracts           # forge test in contracts/
 
@@ -23,7 +24,7 @@ pnpm db:generate              # drizzle-kit generate after editing src/db/schema
 pnpm db:migrate               # apply drizzle/*.sql
 pnpm db:seed [n] [out]        # create dev accounts + agents, write a field file, e.g. pnpm db:seed 6 field.json
 pnpm db:spare <field-file>    # add a second agent to an existing account, so one stays queued
-ARENA_URL=ws://localhost:3000/agent AGENT_FIELD=field.json pnpm --filter @agentholdem/agent field
+ARENA_URL=ws://localhost:3000/agent AGENT_FIELD=field.json pnpm --filter @pokertunity/agent field
 
 pnpm abi                      # contracts/out/... -> src/server/vault-abi.ts (run after any contract change)
 pnpm deploy:vault <chain-key>  # forge deploy, writes <CHAIN>_VAULT_ADDRESS into .env, regenerates ABI
@@ -46,7 +47,7 @@ The arena holds no model key and makes no model calls. Thinking is paid for by w
 
 **Seat numbers on the wire are chairs.** The engine renumbers players densely as agents bust; `decide()` maps positions to chairs via the `chairs` option so an agent's seat number means the same thing all match.
 
-**The engine is not a request handler.** `bootEngine()` runs once per process. That takes a Postgres advisory lock (`src/server/engine-lock.ts`); only the process that wins it deals, and every other instance serves pages. The winner first abandons any match a dead process left mid-hand, then starts the matchmaker. Match state lives in memory, so the lock is what stops two processes dealing the same hand twice. The registry hangs off `globalThis` so `next dev` hot reloads do not start duplicates. `AGENTHOLDEM_DISABLE_ENGINE=1` suppresses the boot. Consequences of living in memory: the SSE stream route answers 503 on an instance that is not dealing, and `/api/health` reports `dealing` and when a hand last finished rather than a bare "ok".
+**The engine is not a request handler.** `bootEngine()` runs once per process. That takes a Postgres advisory lock (`src/server/engine-lock.ts`); only the process that wins it deals, and every other instance serves pages. The winner first abandons any match a dead process left mid-hand, then starts the matchmaker. Match state lives in memory, so the lock is what stops two processes dealing the same hand twice. The registry hangs off `globalThis` so `next dev` hot reloads do not start duplicates. `POKERTUNITY_DISABLE_ENGINE=1` suppresses the boot. Consequences of living in memory: the SSE stream route answers 503 on an instance that is not dealing, and `/api/health` reports `dealing` and when a hand last finished rather than a bare "ok".
 
 **Matches are ephemeral, and nobody chooses one.** `src/server/matchmaker.ts` reads the queue every few seconds, bands agents by rating, and calls `createMatch`, which charges every entrant `SEAT_COST` and writes their seats in one transaction. `openMatch` then puts a `MatchRuntime` on it. A match is fixed from the first hand to the last: no joining, no leaving, no top-ups. It ends when one agent holds every chip or `handCap` hands are up, and `settleMatch` returns the stacks, records the finishing order and rewrites every rating. Then the runtime is dropped. An agent's only lever is the `ready` and `stop` frames, which decide whether it queues again.
 
@@ -60,7 +61,7 @@ Matchmaker details that are easy to break: ticks never overlap (an overlapping t
 
 **Two seat numberings.** The engine numbers the players in a hand densely from zero; the match numbers them by chair, and chairs go sparse as agents bust out. `MatchRuntime.lineup` is the only bridge, via `positionOf` and `chairOf`. Nothing outside those may assume the numbers agree. This is the most common source of bugs in `src/server/table.ts`. Related: the hand's final stacks must be carried back onto `this.seated` after each hand, or every hand deals from the buy-in again and chips stop conserving.
 
-**Redaction happens on the server.** The SSE route in `src/app/api/matches/[id]/stream/route.ts` re-renders any seat-carrying event as `runtime.view(viewerAgentId)` per subscriber instead of forwarding it, so another agent's hole cards are physically absent from the stream. Adding an event type that carries seat state means adding it to that re-render branch.
+**Redaction happens on the server, in two layers.** Hole cards: the SSE route in `src/app/api/matches/[id]/stream/route.ts` re-renders any seat-carrying event as `runtime.view(viewerAgentId)` per subscriber instead of forwarding it, so another agent's hole cards are physically absent from the stream. Adding an event type that carries seat state means adding it to that re-render branch. What describes a deciding seat's cards — its reasoning, its equity, its hand read — is held tighter, because the feed needs no sign-in and those numbers name the holding as surely as showing it: `MatchRuntime` never publishes them while the hand is live, `view()` returns the brain through `sealBrain`, and the only event that carries them is `reveal`, sent for a seat that shows at showdown. That is the same rule `/api/hands/latest` applies to mucked hands afterwards, and the seat's own owner is not an exception. Never add an event that carries any of the three outside `reveal`. Redaction is also only as good as the shuffle: a real hand is dealt from `shuffledDeck()` (`src/server/deck.ts`, a CSPRNG), and the dealt order is stored on `hands.deck` for replay. Never deal a played hand from `seed`/`mulberry32`; a seat shown its hole cards and a flop can search a 32-bit seed space in seconds and read every opponent's cards.
 
 **No file above `src/lib/chains.ts` names a network.** That registry holds one row per chain: id, token, public endpoint, explorer, faucet. `src/server/chains.ts` says which of them this deployment enabled and where their vaults are, reading `CHAINS` and a `<CHAIN>_RPC_URL` / `<CHAIN>_VAULT_ADDRESS` pair named after each key. Screens, wallet prompts, the SIWE message and `scripts/deploy-vault.sh` all read from those two, so adding a chain is a row plus two variables. Never hard-code a chain id, a token symbol, an RPC or an explorer URL anywhere else, and never import a chain from `viem/chains`: `src/server/chain.ts` builds the viem chain from the registry.
 
@@ -78,6 +79,7 @@ Matchmaker details that are easy to break: ticks never overlap (an overlapping t
 
 - Comments in this codebase explain why a thing is the way it is, not what the line does. Match that.
 - Tests that import server modules must `import '../dev/test-env'` first, before any module that reads `DATABASE_URL`.
+- Tests that need a real database import `../dev/test-db` first instead and skip without `TEST_DATABASE_URL`. That database must be named `*_test`, because the suite truncates every table; create it with `createdb` and migrate it with `DATABASE_URL=<it> pnpm db:migrate`.
 - Migrations are generated, never hand-written; edit `src/db/schema.ts` then `pnpm db:generate`.
 - `src/server/vault-abi.ts` is generated. Edit the contract and run `pnpm abi`.
 - Path alias `@/*` maps to `src/*`; app code uses it, server-internal modules use relative imports.

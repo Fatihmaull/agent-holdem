@@ -5,8 +5,7 @@ import type { ArenaEvent, LogLine, SeatView, TableView } from '@/server/view';
 
 export interface StreamState {
   table: TableView | null;
-  /** Reasoning as it arrives, before the decision lands. */
-  streaming: string;
+  /** Whether a seat is deciding right now. */
   isStreaming: boolean;
   idleReason: string | null;
   connected: boolean;
@@ -24,7 +23,6 @@ export interface StreamState {
 
 const initial: StreamState = {
   table: null,
-  streaming: '',
   isStreaming: false,
   idleReason: null,
   connected: false,
@@ -52,7 +50,6 @@ function reduce(state: StreamState, action: Action): StreamState {
           deadline: event.table.remainingMs === null ? null : Date.now() + event.table.remainingMs,
         },
         idleReason: null,
-        streaming: event.table.brain?.reasoning ?? '',
         isStreaming: event.table.toAct !== null,
         moved: [],
         actionKeys: {},
@@ -67,7 +64,6 @@ function reduce(state: StreamState, action: Action): StreamState {
       return {
         ...state,
         idleReason: null,
-        streaming: '',
         isStreaming: true,
         moved: [],
         table: {
@@ -94,25 +90,15 @@ function reduce(state: StreamState, action: Action): StreamState {
             outcome: null,
             failure: null,
             elapsedMs: null,
+            sealed: true,
           },
         },
-      };
-
-    case 'reasoning':
-      return { ...state, streaming: state.streaming + event.delta };
-
-    case 'equity':
-      if (!table?.brain || table.brain.seat !== event.seat) return state;
-      return {
-        ...state,
-        table: { ...table, brain: { ...table.brain, equity: event.equity, handRead: event.handRead } },
       };
 
     case 'decision': {
       if (!table) return state;
       return {
         ...state,
-        streaming: event.reasoning,
         isStreaming: false,
         moved: [event.seat],
         actionKeys: { ...state.actionKeys, [event.seat]: (state.actionKeys[event.seat] ?? 0) + 1 },
@@ -144,19 +130,24 @@ function reduce(state: StreamState, action: Action): StreamState {
             seatName: table.brain?.seatName ?? null,
             color: table.brain?.color ?? null,
             street: table.brain?.street ?? (table.street === 'idle' ? 'preflop' : table.street),
-            reasoning: event.reasoning,
-            equity: event.equity,
-            handRead: event.handRead,
+            reasoning: '',
+            equity: null,
+            handRead: null,
             potOdds: table.brain?.potOdds ?? null,
             action: event.action,
             amount: event.amount,
             outcome: event.outcome,
             failure: event.failure,
             elapsedMs: event.elapsedMs,
+            sealed: true,
           },
         },
       };
     }
+
+    case 'reveal':
+      if (!table) return state;
+      return { ...state, isStreaming: false, table: { ...table, brain: event.brain } };
 
     case 'street': {
       if (!table) return state;
@@ -242,29 +233,68 @@ function appendLog(log: LogLine[], line: LogLine): LogLine[] {
   return next.length > 60 ? next.slice(-60) : next;
 }
 
+const RETRY_MIN_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
+
 /**
  * Subscribes to one table's feed. Passing null subscribes to nothing, which
  * lets a page decide what to watch without breaking the rules of hooks.
- * The browser reconnects on its own if the connection drops.
+ *
+ * A dropped connection is retried by the browser itself, but a refused one is
+ * not: `EventSource` gives up for good on anything other than a 200, and a 503
+ * is what the feed answers while a deploy hands the room from one process to
+ * the next. So a source the browser has closed is reopened here, backing off,
+ * until the match says it is over.
  */
 export function useMatchStream(matchId: string | null): StreamState {
   const [state, dispatch] = useReducer(reduce, initial);
 
   useEffect(() => {
     if (!matchId) return;
-    const source = new EventSource(`/api/matches/${matchId}/stream`);
 
-    source.onopen = () => dispatch({ type: 'connected', value: true });
-    source.onerror = () => dispatch({ type: 'connected', value: false });
-    source.onmessage = (message) => {
-      try {
-        dispatch({ type: 'event', event: JSON.parse(message.data) as ArenaEvent });
-      } catch {
-        // A malformed frame is dropped rather than breaking the arena.
-      }
+    let source: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let over = false;
+    let delay = RETRY_MIN_MS;
+
+    const open = () => {
+      const current = new EventSource(`/api/matches/${matchId}/stream`);
+      source = current;
+
+      current.onopen = () => {
+        delay = RETRY_MIN_MS;
+        dispatch({ type: 'connected', value: true });
+      };
+      current.onerror = () => {
+        dispatch({ type: 'connected', value: false });
+        if (over || current.readyState !== EventSource.CLOSED) return;
+        retry = setTimeout(open, delay);
+        delay = Math.min(delay * 2, RETRY_MAX_MS);
+      };
+      current.onmessage = (message) => {
+        let event: ArenaEvent;
+        try {
+          event = JSON.parse(message.data) as ArenaEvent;
+        } catch {
+          // A malformed frame is dropped rather than breaking the arena.
+          return;
+        }
+        // Nothing more is coming, and reconnecting would only be told so again.
+        if (event.type === 'idle') {
+          over = true;
+          current.close();
+        }
+        dispatch({ type: 'event', event });
+      };
     };
 
-    return () => source.close();
+    open();
+
+    return () => {
+      over = true;
+      if (retry) clearTimeout(retry);
+      source?.close();
+    };
   }, [matchId]);
 
   return state;

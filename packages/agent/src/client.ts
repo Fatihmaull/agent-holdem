@@ -7,7 +7,7 @@ import {
   type ActFrame,
   type ClientFrame,
   type ServerFrame,
-} from '@agentholdem/protocol';
+} from '@pokertunity/protocol';
 import type { Brain } from './brain';
 
 /**

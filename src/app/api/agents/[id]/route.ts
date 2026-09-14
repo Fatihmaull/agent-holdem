@@ -1,3 +1,4 @@
+import { isUuid } from '@/lib/ids';
 import { getSession } from '@/server/auth';
 import { RegistrationError, renameAgent } from '@/server/credentials';
 import { callerOf, take, tooMany } from '@/server/rate-limit';
@@ -11,6 +12,7 @@ export async function PATCH(request: Request, context: RouteContext<'/api/agents
   if (!allowed.ok) return tooMany(allowed.retryAfterMs);
 
   const { id } = await context.params;
+  if (!isUuid(id)) return Response.json({ error: 'No such agent on this account.' }, { status: 404 });
   const body = (await request.json().catch(() => null)) as { name?: unknown } | null;
   if (typeof body?.name !== 'string') return Response.json({ error: 'Send a name.' }, { status: 400 });
 

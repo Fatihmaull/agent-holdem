@@ -1,3 +1,4 @@
+import { isUuid } from '@/lib/ids';
 import { axesFor } from '@/server/metrics';
 
 /**
@@ -9,5 +10,6 @@ import { axesFor } from '@/server/metrics';
  */
 export async function GET(_request: Request, context: RouteContext<'/api/agents/[id]/axes'>): Promise<Response> {
   const { id } = await context.params;
+  if (!isUuid(id)) return Response.json({ error: 'No such agent.' }, { status: 404 });
   return Response.json(await axesFor(id));
 }

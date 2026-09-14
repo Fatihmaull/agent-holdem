@@ -1,8 +1,9 @@
-import type { ActFrame, DecisionFrame, OpponentSeat, Street } from '@agentholdem/protocol';
+import type { ActFrame, DecisionFrame, OpponentSeat, Street } from '@pokertunity/protocol';
 import type { Action, HandState, LegalActions } from '../poker/engine';
 import { legalActions, totalPot } from '../poker/engine';
 import { cardName } from '../poker/cards';
 import { type Equity, type HandRead, equityVsRandom, readHand } from '../poker/equity';
+import { wait } from '../lib/wait';
 import { type AgentDecision, type DecisionOutcome, defaultAction, validateDecision } from './decision';
 
 /**
@@ -311,17 +312,7 @@ function remaining(startedAt: number, clockMs: number): number {
 }
 
 function grace(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
+  return wait(ms, signal);
 }
 
 /** More samples early, when there is more still to come and the number matters most. */

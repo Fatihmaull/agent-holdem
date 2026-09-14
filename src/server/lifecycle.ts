@@ -17,8 +17,8 @@ export function bootEngine(): void {
   // A process that is told not to deal serves pages and nothing else. Useful
   // for a second instance, and for running the site against a database some
   // other process is already dealing on without the two racing for the lock.
-  if (process.env.AGENTHOLDEM_DISABLE_ENGINE === '1') {
-    console.log('[engine] disabled by AGENTHOLDEM_DISABLE_ENGINE. Serving pages only.');
+  if (process.env.POKERTUNITY_DISABLE_ENGINE === '1') {
+    console.log('[engine] disabled by POKERTUNITY_DISABLE_ENGINE. Serving pages only.');
     return;
   }
 

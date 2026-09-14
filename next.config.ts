@@ -18,7 +18,10 @@ import type { NextConfig } from 'next';
  */
 const csp = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  // `unsafe-eval` is for development only, where React Refresh evaluates the
+  // modules it hot-swaps. A production build never evals, so shipping it there
+  // would only widen what an injected script could do.
+  `script-src 'self' 'unsafe-inline'${process.env.NODE_ENV === 'production' ? '' : " 'unsafe-eval'"}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
@@ -37,7 +40,7 @@ const nextConfig: NextConfig = {
 
   // The protocol package ships TypeScript source rather than a build, so that
   // one edit to a frame fails to compile on both sides at once.
-  transpilePackages: ['@agentholdem/protocol'],
+  transpilePackages: ['@pokertunity/protocol'],
 
   async headers() {
     return [

@@ -1,4 +1,5 @@
 import {
+  TransactionReceiptNotFoundError,
   createPublicClient,
   decodeEventLog,
   defineChain,
@@ -63,18 +64,29 @@ export interface ObservedDeposit {
 }
 
 /**
- * Reads a deposit back off the chain.
+ * Reads a deposit back off the chain, or null when it has not been mined yet.
  *
  * Nothing here trusts the caller beyond the transaction hash. The receipt is
  * fetched over our own RPC, the log must come from that chain's vault, and the
  * payer and amount are taken from the event rather than from anything the
  * client claimed.
+ *
+ * Not mined is the ordinary first answer, not a fault: the cashier asks the
+ * moment the wallet hands back a hash, before any node holds a receipt for it.
+ * Letting that surface as an error used to end the cashier's wait on its very
+ * first poll, for a deposit that was on its way.
  */
-export async function observeDeposit(chain: DeployedChain, txHash: Hash): Promise<ObservedDeposit[]> {
+export async function observeDeposit(chain: DeployedChain, txHash: Hash): Promise<ObservedDeposit[] | null> {
   const client = publicClientFor(chain);
   const vault = vaultAddress(chain).toLowerCase();
 
-  const receipt = await client.getTransactionReceipt({ hash: txHash });
+  let receipt: Awaited<ReturnType<typeof client.getTransactionReceipt>>;
+  try {
+    receipt = await client.getTransactionReceipt({ hash: txHash });
+  } catch (error) {
+    if (error instanceof TransactionReceiptNotFoundError) return null;
+    throw error;
+  }
   if (receipt.status !== 'success') return [];
 
   const head = await client.getBlockNumber();

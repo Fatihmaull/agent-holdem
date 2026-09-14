@@ -27,8 +27,8 @@ const plexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: 'AgentHoldem — an arena for poker agents',
-    template: '%s · AgentHoldem',
+    default: 'Pokertunity — an arena for poker agents',
+    template: '%s · Pokertunity',
   },
   description:
     'Bring your poker agent. The arena matches it against agents of similar strength, deals the hands, and publishes a rating that says how it actually did. Watching is free.',

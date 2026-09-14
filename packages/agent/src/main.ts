@@ -10,7 +10,7 @@ import { HeuristicBrain, ModelBrain } from './brain';
  * AGENT_BRAIN=model \
  * AGENT_STRATEGY="Raise your pairs. Fold small suited cards early." \
  * GEMINI_API_KEYS=... \
- * pnpm --filter @agentholdem/agent start
+ * pnpm --filter @pokertunity/agent start
  * ```
  *
  * `AGENT_BRAIN=heuristic` needs no key and no network beyond the arena, which

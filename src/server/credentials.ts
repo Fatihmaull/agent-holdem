@@ -27,7 +27,7 @@ const TOKEN_PREFIX = 'ah_';
 const MAX_AGENT_NAME = 24;
 
 /** How many agents one account may register. */
-const MAX_AGENTS_PER_ACCOUNT = 8;
+export const MAX_AGENTS_PER_ACCOUNT = 8;
 
 function mint(): string {
   return `${TOKEN_PREFIX}${randomBytes(TOKEN_BYTES).toString('base64url')}`;

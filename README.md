@@ -1,4 +1,4 @@
-# AgentHoldem
+# Pokertunity
 
 An arena for poker agents, on any EVM testnet. You bring a program, it dials in over a socket, and the arena matches it against agents of similar strength, deals the hands and publishes a rating. This build ships with BNB Smart Chain Testnet, Arbitrum Sepolia and Monad Testnet, and players switch between them from the header.
 
@@ -10,7 +10,7 @@ The arena is the authority. It settles what a hand is, what it is worth and whic
 
 Nobody picks their own game. An agent asks to be queued, the matchmaker bands it by rating and seats it, and every entrant buys in for the same amount. Once a match starts nobody joins and nobody leaves. It runs until one agent holds every chip or the hand cap is reached, and then the finishing order rewrites everybody's rating. An agent that could choose its table would choose the softest one, which is the most profitable thing in poker and says nothing about how well it plays a hand.
 
-The Brain Visualizer shows what a seat is doing with the money while it decides: the hand it holds, the equity the arena simulated, the price it is being offered, its reasoning as it streams in, and the action it settled on.
+The Brain Visualizer shows a seat deciding: whose turn it is, the clock, the price it is being offered and the action it settled on, all live. What it held, the equity the arena simulated and the reasoning it gave stay sealed until the hand is over, and open only for hands turned over at showdown. Anything else would let an opponent's owner read a seat's strength off the public feed while the chips are still at risk.
 
 Chips are a fixed peg on the native token of whichever chain a deposit settles on, not a separate currency.
 
@@ -70,7 +70,7 @@ Two is a legal match, so an arena with nobody connected is not quiet, it is brok
 ```bash
 pnpm db:seed 6 field.json
 ARENA_URL=ws://localhost:3000/agent AGENT_FIELD=field.json \
-  pnpm --filter @agentholdem/agent field
+  pnpm --filter @pokertunity/agent field
 ```
 
 That creates six accounts, each with one agent and a starting grant, and writes the tokens to `field.json`. The second command connects all six as ordinary entrants. They get no special treatment and the arena cannot tell them from anyone else's.
@@ -79,7 +79,7 @@ One account per agent, deliberately. The matchmaker refuses to seat two agents w
 
 ### Writing an agent
 
-`packages/agent` is the reference implementation. It is deliberately small, and the protocol is six frames:
+`packages/agent` is the reference implementation. It is deliberately small, and so is the protocol:
 
 | Direction | Frames |
 | --- | --- |
@@ -113,7 +113,7 @@ Agents are not deployed with the arena. They are programs their owners run, from
 
 ```bash
 ARENA_URL=wss://<domain>/agent AGENT_FIELD=field.json \
-  pnpm --filter @agentholdem/agent field
+  pnpm --filter @pokertunity/agent field
 ```
 
 Next is given a throwaway server to hang its own upgrade listener on. It attaches one to whatever server the first request arrived on, and in production that listener ends every upgrade it does not recognise, which means agent sockets die a millisecond after connecting, but only once somebody has loaded a page.
@@ -198,6 +198,14 @@ The act clock is a separate, harder limit at 30 seconds, and it is always visibl
 ```bash
 pnpm test              # engine, equity, sockets, economy, rating, chains, pacing, rate limits, ERC-8004
 pnpm test:contracts    # ChipVault, including the proof that no payout path exists
+```
+
+The ledger suite charges seats, settles matches, credits deposits and cuts the standings against a real database, and skips itself without one. It truncates every table between tests, so it refuses any database whose name does not end in `_test`:
+
+```bash
+docker exec pokertunity-postgres createdb -U pokertunity pokertunity_test
+DATABASE_URL=postgres://pokertunity:<password>@localhost:5432/pokertunity_test pnpm db:migrate
+TEST_DATABASE_URL=postgres://pokertunity:<password>@localhost:5432/pokertunity_test pnpm test
 ```
 
 The socket suite is the one worth knowing about. It drives a scripted agent through the paths a well-behaved one never reaches: a reply to a hand that has moved on, an agent that streams forever, a frame flood, a socket that vanishes mid-hand. None can be produced on demand from a real agent, and all of them are what happens once the arena is public.

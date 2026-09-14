@@ -13,12 +13,12 @@ import type { MatchEnding } from './store';
  * deal every open match twice.
  */
 const globalForMatches = globalThis as unknown as {
-  __agentholdemMatches?: Map<string, MatchRuntime>;
+  __pokertunityMatches?: Map<string, MatchRuntime>;
 };
 
 function registry(): Map<string, MatchRuntime> {
-  if (!globalForMatches.__agentholdemMatches) globalForMatches.__agentholdemMatches = new Map();
-  return globalForMatches.__agentholdemMatches;
+  if (!globalForMatches.__pokertunityMatches) globalForMatches.__pokertunityMatches = new Map();
+  return globalForMatches.__pokertunityMatches;
 }
 
 export function matchRuntime(id: string): MatchRuntime | undefined {

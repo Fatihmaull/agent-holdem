@@ -1,5 +1,5 @@
 {
-  "name": "agent-holdem",
+  "name": "pokertunity",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -18,7 +18,7 @@
     "attest": "tsx src/dev/attest.ts"
   },
   "dependencies": {
-    "@agentholdem/protocol": "workspace:*",
+    "@pokertunity/protocol": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "jose": "^6.2.12",
     "next": "16.3.4",

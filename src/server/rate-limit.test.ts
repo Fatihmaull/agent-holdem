@@ -25,10 +25,10 @@ test('one caller running out does not close the door on anybody else', () => {
   const noisy = someone('noisy');
   const quiet = someone('quiet');
 
-  for (let i = 0; i < LIMITS.seat.burst + 5; i++) take('seat', noisy);
+  for (let i = 0; i < LIMITS['deposit-start'].burst + 5; i++) take('deposit-start', noisy);
 
-  assert.equal(take('seat', noisy).ok, false);
-  assert.equal(take('seat', quiet).ok, true, 'a limit is per caller, not a global tap');
+  assert.equal(take('deposit-start', noisy).ok, false);
+  assert.equal(take('deposit-start', quiet).ok, true, 'a limit is per caller, not a global tap');
 });
 
 test('limits are counted per route, not shared across them', () => {
@@ -36,7 +36,7 @@ test('limits are counted per route, not shared across them', () => {
   for (let i = 0; i < LIMITS['deposit-start'].burst; i++) take('deposit-start', who);
 
   assert.equal(take('deposit-start', who).ok, false);
-  assert.equal(take('seat', who).ok, true, 'spending one allowance does not spend another');
+  assert.equal(take('deposit-confirm', who).ok, true, 'spending one allowance does not spend another');
 });
 
 test('an account is counted as itself, and a stranger by address', () => {

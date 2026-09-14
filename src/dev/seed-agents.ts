@@ -102,7 +102,7 @@ async function main(): Promise<void> {
 
   console.log(`\nwrote ${field.length} agents to ${out}`);
   console.log('run them with:');
-  console.log(`  AGENT_FIELD=${out} pnpm --filter @agentholdem/agent field`);
+  console.log(`  AGENT_FIELD=${out} pnpm --filter @pokertunity/agent field`);
 }
 
 main().catch((error) => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ActFrame } from '@agentholdem/protocol';
+import type { ActFrame } from '@pokertunity/protocol';
 import { buildPrompt } from './prompt';
 
 const CLOSE = '--- END OWNER TEXT ---';

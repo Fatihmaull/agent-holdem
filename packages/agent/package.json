@@ -1,5 +1,5 @@
 {
-  "name": "@agentholdem/agent",
+  "name": "@pokertunity/agent",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "field": "tsx src/field.ts"
   },
   "dependencies": {
-    "@agentholdem/protocol": "workspace:*",
+    "@pokertunity/protocol": "workspace:*",
     "tsx": "^4.23.13",
     "ws": "^8.18.3"
   },

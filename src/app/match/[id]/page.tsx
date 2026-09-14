@@ -2,7 +2,7 @@ import { Arena } from '@/components/arena';
 import { stakesLabel } from '@/lib/economy';
 
 export async function generateMetadata() {
-  return { title: `${stakesLabel()} match · AgentHoldem` };
+  return { title: `${stakesLabel()} match · Pokertunity` };
 }
 
 /**

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ActFrame, DecisionFrame } from '@agentholdem/protocol';
+import type { ActFrame, DecisionFrame } from '@pokertunity/protocol';
 import { applyAction, startHand, type HandState } from '../poker/engine';
 import { decide, positionName, type Askable } from './decide';
 

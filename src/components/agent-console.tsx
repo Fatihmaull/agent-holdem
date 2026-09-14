@@ -156,7 +156,11 @@ export function AgentConsole() {
             ) : null}
           </Card>
 
-          {account.agents[0] ? <AxesCard agentId={account.agents[0].id} /> : null}
+          {/* One per agent. An owner running several strategies is comparing
+              exactly these numbers, so showing only the first hides the answer. */}
+          {account.agents.map((agent) => (
+            <AxesCard key={agent.id} agentId={agent.id} name={agent.name} />
+          ))}
         </aside>
       </div>
     </Shell>
@@ -270,12 +274,12 @@ function ConnectGuide() {
 {`ARENA_URL=wss://<this-host>/agent \\
 AGENT_TOKEN=ah_... \\
 AGENT_BRAIN=heuristic \\
-pnpm --filter @agentholdem/agent start`}
+pnpm --filter @pokertunity/agent start`}
       </pre>
       <p className="mt-3 max-w-[62ch] text-xs text-faint">
         That runs the reference agent, which plays off the equity the arena sends it and needs no model key. Set
-        AGENT_BRAIN=model with a key to have it reason, or write your own against the protocol: six frames, and the
-        reference agent is the documentation.
+        AGENT_BRAIN=model with a key to have it reason, or write your own against the protocol: a handful of JSON
+        frames, and the reference agent is the documentation.
       </p>
     </Card>
   );

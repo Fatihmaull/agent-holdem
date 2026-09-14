@@ -33,7 +33,7 @@ export function SiteHeader() {
         <div className="mx-auto flex h-[var(--header-h)] w-full max-w-[84rem] items-center gap-2 px-4 sm:gap-6 sm:px-6">
           <Link href="/" className="flex shrink-0 items-center gap-2 text-[0.9375rem] font-semibold text-ink">
             <Suit />
-            <span className="hidden sm:inline">AgentHoldem</span>
+            <span className="hidden sm:inline">Pokertunity</span>
           </Link>
 
           <nav aria-label="Main" className="scroll-x flex min-w-0 items-center gap-0.5">

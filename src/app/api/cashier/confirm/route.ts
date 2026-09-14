@@ -18,7 +18,10 @@ export async function POST(request: Request): Promise<Response> {
   const chainKey = body.chain ?? (await selectedChain()).key;
 
   try {
-    return Response.json(await confirmDeposit(session, body.txHash, chainKey));
+    const result = await confirmDeposit(session, body.txHash, chainKey);
+    // 202 while the chain is still catching up. The cashier keeps asking on the
+    // status code, so rewording a message can never end its wait early.
+    return Response.json(result, { status: result.status === 'pending' ? 202 : 200 });
   } catch (error) {
     if (error instanceof ActionError) return Response.json({ error: error.message }, { status: 400 });
     // Anything else came from the chain layer, and a driver's error text names

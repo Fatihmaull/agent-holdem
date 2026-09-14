@@ -225,10 +225,16 @@ export async function startDeposit(session: Session, packageId: string, chainKey
   };
 }
 
-export interface DepositResult {
-  chips: number;
-  balance: number;
-}
+/**
+ * What confirming a deposit came to.
+ *
+ * Pending is an answer rather than an error. A transaction not mined yet, or
+ * mined but short of its confirmations, is a deposit on its way, and the cashier
+ * keeps polling on this status instead of on the wording of a message.
+ */
+export type DepositResult =
+  | { status: 'credited'; chips: number; balance: number }
+  | { status: 'pending'; confirmations: number; required: number };
 
 /**
  * Notes the transaction a deposit was paid with, before it has confirmed.
@@ -253,12 +259,21 @@ export async function noteDepositTx(session: Session, intentId: string, txHash: 
           eq(depositIntents.status, 'pending'),
         ),
       );
-  } catch {
+  } catch (error) {
     // A hash is unique per chain, so writing one that is already on another
     // intent fails here. That is a client repeating itself, not a fault: the
     // hash is already on record against the intent that actually paid it, and
-    // that is the row confirmation will find.
+    // that is the row confirmation will find. Anything else is a real failure,
+    // and swallowing it would let a player believe a deposit was saved to be
+    // finished later when it was not.
+    if (!isUniqueViolation(error)) throw error;
   }
+}
+
+/** Postgres's unique violation, whether the driver's error arrives bare or wrapped by drizzle. */
+function isUniqueViolation(error: unknown): boolean {
+  const failure = error as { code?: unknown; cause?: { code?: unknown } } | null;
+  return failure?.code === '23505' || failure?.cause?.code === '23505';
 }
 
 /**
@@ -301,20 +316,31 @@ export async function unsettledDeposits(
  * this account is the one credited. Calling again finishes the next, which is
  * how a client that made several in one call gets all of them.
  */
-export async function confirmDeposit(session: Session, txHash: string, chainKey: string): Promise<DepositResult> {
+export async function confirmDeposit(
+  session: Session,
+  txHash: string,
+  chainKey: string,
+  // The chain read, as a parameter so the ledger half can be tested without a
+  // node. Every caller in the app takes the default.
+  observe: typeof observeDeposit = observeDeposit,
+): Promise<DepositResult> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) throw new ActionError('That is not a transaction hash.');
 
   const chain = chainFor(chainKey);
 
-  const deposits = await observeDeposit(chain, txHash as `0x${string}`);
+  const deposits = await observe(chain, txHash as `0x${string}`);
+  const required = Number(REQUIRED_CONFIRMATIONS);
+
+  // Not mined yet, which is what the first ask after a wallet returns a hash
+  // nearly always finds. A deposit on its way, not a failure.
+  if (deposits === null) return { status: 'pending', confirmations: 0, required };
+
   if (deposits.length === 0) {
     throw new ActionError(`No deposit to the ${chain.shortName} vault was found in that transaction.`);
   }
 
   if (deposits[0].confirmations < REQUIRED_CONFIRMATIONS) {
-    throw new ActionError(
-      `Waiting for confirmations (${deposits[0].confirmations} of ${REQUIRED_CONFIRMATIONS}). Try again shortly.`,
-    );
+    return { status: 'pending', confirmations: Number(deposits[0].confirmations), required };
   }
 
   const mine = deposits.filter((row) => row.payer.toLowerCase() === session.address.toLowerCase());
@@ -408,6 +434,6 @@ export async function confirmDeposit(session: Session, txHash: string, chainKey:
       reference: txHash,
     });
 
-    return { chips, balance: updated.chips };
+    return { status: 'credited' as const, chips, balance: updated.chips };
   });
 }

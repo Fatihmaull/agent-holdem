@@ -302,10 +302,10 @@ export const seats = pgTable(
      *
      * The chips in front of a seat belong to the hand while it is being played,
      * so paying that stack out would refund a buy-in the agent is busy losing
-     * and mint the difference. The engine used to hold that rule in memory,
-     * which was only sound while exactly one process could ever touch a seat.
-     * A second web instance serving a leave request has no such memory, so the
-     * rule lives on the row instead, where every process can see it.
+     * and mint the difference. Nobody can leave a match, so the only other
+     * writer is the process that abandons matches after a restart, and it did
+     * not deal the hand. The rule lives on the row, where that process can see
+     * it, rather than in the memory of the one that went away.
      */
     inHand: boolean('in_hand').notNull().default(false),
     joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
@@ -326,7 +326,14 @@ export const hands = pgTable(
       .notNull()
       .references(() => matches.id, { onDelete: 'cascade' }),
     handNumber: integer('hand_number').notNull(),
-    seed: integer('seed').notNull(),
+    /**
+     * The seed a hand used to be shuffled from. Only on hands dealt before decks
+     * were stored: a seed an agent can search for is a deck it can read, so no
+     * hand is dealt from one any more.
+     */
+    seed: integer('seed'),
+    /** The deck as dealt, off the end, from a CSPRNG. Null only on hands that carry a seed. */
+    deck: jsonb('deck').$type<number[]>(),
     button: integer('button').notNull(),
     /** Agent identities and starting stacks, as dealt. */
     lineup: jsonb('lineup').notNull(),
@@ -369,7 +376,12 @@ export const decisions = pgTable(
     outcome: decisionOutcome('outcome').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('decisions_hand_idx').on(table.handId, table.id)],
+  (table) => [
+    index('decisions_hand_idx').on(table.handId, table.id),
+    // What the axes read by: one agent's own decisions, and every opponent's
+    // preflop ones. Without it each of those is a scan of the largest table.
+    index('decisions_agent_idx').on(table.agentId, table.street),
+  ],
 );
 
 /**

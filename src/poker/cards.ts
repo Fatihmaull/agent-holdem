@@ -41,7 +41,12 @@ export function fullDeck(): Card[] {
   return Array.from({ length: DECK_SIZE }, (_, i) => i);
 }
 
-/** Fisher-Yates. Takes the random source so hands can be replayed from a seed. */
+/**
+ * Fisher-Yates over whatever random source it is given.
+ *
+ * Only as unpredictable as that source, so it is for tests and simulations. A
+ * deck a real hand is dealt from comes from `src/server/deck.ts`.
+ */
 export function shuffle<T>(items: T[], random: () => number = Math.random): T[] {
   const out = items.slice();
   for (let i = out.length - 1; i > 0; i--) {
@@ -52,8 +57,29 @@ export function shuffle<T>(items: T[], random: () => number = Math.random): T[] 
 }
 
 /**
- * Deterministic 32-bit PRNG. Hands are dealt from a seed so a match can be
- * replayed exactly, which matters for the landing page's replay of the last hand.
+ * A copy of a deck, refused unless it is all 52 cards exactly once.
+ *
+ * A deck arriving from outside the engine that repeated a card or dropped one
+ * would still deal, and the hand it dealt would be wrong in a way no later check
+ * notices.
+ */
+export function checkedDeck(deck: readonly Card[]): Card[] {
+  const seen = new Uint8Array(DECK_SIZE);
+  for (const card of deck) {
+    if (!Number.isInteger(card) || card < 0 || card >= DECK_SIZE || seen[card]) {
+      throw new Error('a deck is every card exactly once');
+    }
+    seen[card] = 1;
+  }
+  if (deck.length !== DECK_SIZE) throw new Error('a deck is every card exactly once');
+  return [...deck];
+}
+
+/**
+ * Deterministic 32-bit PRNG, for tests that need the same hand twice.
+ *
+ * Never deals a real hand. Its whole state is one 32-bit number, and a seat
+ * shown its hole cards and a flop can search that space in seconds.
  */
 export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;

@@ -57,6 +57,17 @@ export interface BrainView {
   /** Plain statement of what went wrong, shown only on the terminal half. */
   failure: string | null;
   elapsedMs: number | null;
+  /**
+   * True while the reasoning, equity and hand read above are withheld.
+   *
+   * They are the holding by another name: an equity of 0.9 on the river names
+   * the cards as surely as turning them over would. So they stay sealed for the
+   * whole hand and open only for seats that show at a showdown, the same rule
+   * the replay applies afterwards. The seat's own owner gets the sealed view
+   * too, because the feed is public and one rule is the only kind that cannot
+   * be walked around.
+   */
+  sealed: boolean;
 }
 
 export interface TableView {
@@ -105,25 +116,24 @@ export type ArenaEvent =
       potOdds: number | null;
       street: Street;
     }
-  | { type: 'reasoning'; seat: number; delta: string }
-  | { type: 'equity'; seat: number; equity: number; handRead: BrainView['handRead'] }
+  // No event carries a deciding seat's reasoning, equity or hand read while its
+  // hand is live. See `BrainView.sealed`; `reveal` is the only way they leave.
   | {
       type: 'decision';
       seat: number;
       action: string;
       amount: number;
       to: number;
-      equity: number;
-      handRead: BrainView['handRead'];
       outcome: DecisionOutcome;
       failure: string | null;
       elapsedMs: number;
       say: string | null;
-      reasoning: string;
       stack: number;
       committed: number;
       pot: number;
     }
+  /** A seat that showed at showdown, with the thinking behind its last decision. */
+  | { type: 'reveal'; brain: BrainView }
   | { type: 'street'; street: Street; cards: string[]; pot: number }
   | { type: 'showdown'; seat: number; hole: string[]; hand: string }
   | { type: 'award'; seat: number; amount: number; uncontested: boolean; stack: number }

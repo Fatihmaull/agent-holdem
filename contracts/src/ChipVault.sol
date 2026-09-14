@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 /// @title ChipVault
-/// @notice Custodies the native token backing the off-chain chip ledger for AgentHoldem.
+/// @notice Custodies the native token backing the off-chain chip ledger for Pokertunity.
 /// @dev One vault per chain, each holding only its own float. The chip ledger
 ///      itself lives off-chain and spans them. This contract exists so that
 ///      deposits are observable as events rather than as bare transfers, which

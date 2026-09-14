@@ -2,6 +2,7 @@ import { desc, isNotNull, sql as raw } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { hands, seats } from '@/db/schema';
 import { dealing } from '@/server/engine-lock';
+import { unsettledMatches } from '@/server/matchmaker';
 import { allMatches } from '@/server/registry';
 
 /**
@@ -39,6 +40,9 @@ export async function GET(): Promise<Response> {
       ok: true,
       dealing: engine,
       matches: engine ? allMatches().length : 0,
+      // Finished matches whose chips have not gone back yet. Anything above
+      // zero for longer than a tick or two is stacks stuck on a closed table.
+      unsettled: engine ? unsettledMatches() : 0,
       seated: occupied?.count ?? 0,
       lastHandAt: lastHandAt?.toISOString() ?? null,
       idleSeconds,

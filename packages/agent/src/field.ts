@@ -18,7 +18,7 @@ import { HeuristicBrain, ModelBrain, type Brain } from './brain';
  * ```
  * ARENA_URL=ws://localhost:3000/agent \
  * AGENT_FIELD=./field.json \
- * pnpm --filter @agentholdem/agent field
+ * pnpm --filter @pokertunity/agent field
  * ```
  *
  * Where field.json is a list of entries:

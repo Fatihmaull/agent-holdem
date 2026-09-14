@@ -1,4 +1,4 @@
-import type { ActFrame } from '@agentholdem/protocol';
+import type { ActFrame } from '@pokertunity/protocol';
 
 /**
  * Turning a decision request into something a language model can answer.

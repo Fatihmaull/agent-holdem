@@ -13,9 +13,9 @@ import {
   type CloseCode,
   type DecisionFrame,
   type ServerFrame,
-} from '@agentholdem/protocol';
+} from '@pokertunity/protocol';
 import { SEAT_COST } from '../lib/economy';
-import { agentByToken, markClosed, markSeen } from './credentials';
+import { MAX_AGENTS_PER_ACCOUNT, agentByToken, markClosed, markSeen } from './credentials';
 import { attach, connectionsFor, detach, linkFor, type AgentLink } from './presence';
 import { balanceOf } from './store';
 
@@ -37,13 +37,20 @@ import { balanceOf } from './store';
 /** How long the handshake may take before the connection is dropped. */
 const HANDSHAKE_MS = 10_000;
 
-/** Sockets one account may hold at once. */
-const MAX_CONNECTIONS_PER_ACCOUNT = 5;
+/**
+ * Sockets one account may hold at once: one for every agent it can register.
+ *
+ * Anything lower refuses an owner's own agents, which is the team running
+ * several strategies that per-owner agents exist for. A connection for an agent
+ * that is already connected replaces the old one rather than adding to it, so
+ * this is a backstop rather than a limit a well-behaved owner should ever meet.
+ */
+const MAX_CONNECTIONS_PER_ACCOUNT = MAX_AGENTS_PER_ACCOUNT;
 
 /** How often the arena pings a quiet socket, to survive idle proxy timeouts. */
 const HEARTBEAT_MS = 25_000;
 
-const globalForSocket = globalThis as unknown as { __agentholdemWss?: WebSocketServer };
+const globalForSocket = globalThis as unknown as { __pokertunityWss?: WebSocketServer };
 
 /**
  * Routes upgrade requests, handing anything that is not an agent to Next.
@@ -53,8 +60,8 @@ const globalForSocket = globalThis as unknown as { __agentholdemWss?: WebSocketS
  * the bundler failing rather than like this file.
  */
 export function attachAgentSocket(server: HttpServer, nextUpgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => void): void {
-  const wss = globalForSocket.__agentholdemWss ?? new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
-  globalForSocket.__agentholdemWss = wss;
+  const wss = globalForSocket.__pokertunityWss ?? new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
+  globalForSocket.__pokertunityWss = wss;
 
   server.on('upgrade', (request, socket, head) => {
     const path = (request.url ?? '').split('?')[0];
@@ -77,7 +84,12 @@ export function attachAgentSocket(server: HttpServer, nextUpgrade: (req: Incomin
  * in the morning should be told what they did, and a silent drop is the one
  * outcome that teaches them nothing.
  */
-async function greet(ws: WebSocket): Promise<void> {
+export async function greet(
+  ws: WebSocket,
+  // The token lookup, as a parameter so the handshake can be driven in a test
+  // without a database. The socket server always takes the default.
+  lookup: typeof agentByToken = agentByToken,
+): Promise<void> {
   const opened = Date.now();
 
   /**
@@ -123,14 +135,25 @@ async function greet(ws: WebSocket): Promise<void> {
     return;
   }
 
-  const agent = await agentByToken(hello.token).catch(() => null);
+  const agent = await lookup(hello.token).catch(() => null);
+
+  // The lookup is a round trip, and a client can hang up during it. Its close
+  // has already fired by now, so a link built on this socket would never hear
+  // one: it would sit on the floor as a connected agent that is not there, be
+  // queued if it had pipelined `ready`, and be seated to time out every decision.
+  if (ws.readyState !== ws.OPEN) return;
+
   if (!agent) {
     reject(ws, CLOSE.UNAUTHORIZED, 'That token does not match an agent. Rotate it on your account page.');
     return;
   }
 
-  if (connectionsFor(agent.userId) >= MAX_CONNECTIONS_PER_ACCOUNT) {
-    reject(ws, CLOSE.FLOODING, `One account may hold ${MAX_CONNECTIONS_PER_ACCOUNT} connections at once.`);
+  if (connectionsFor(agent.userId, agent.agentId) >= MAX_CONNECTIONS_PER_ACCOUNT) {
+    reject(
+      ws,
+      CLOSE.FLOODING,
+      `This account already has ${MAX_CONNECTIONS_PER_ACCOUNT} agents connected, the most it can run at once.`,
+    );
     return;
   }
 
@@ -199,6 +222,8 @@ export class SocketLink implements AgentLink {
   private secondStartedAt = Date.now();
   private readonly heartbeat: NodeJS.Timeout;
   private closed = false;
+  /** Whether the far end answered the last ping. */
+  private answered = true;
 
   constructor(
     private readonly ws: WebSocket,
@@ -208,13 +233,40 @@ export class SocketLink implements AgentLink {
     ws.on('message', (data) => this.receive(data.toString()));
     ws.on('close', (code, reason) => this.ended(code, reason.toString()));
     ws.on('error', () => this.ended(CLOSE.MALFORMED, 'The connection errored.'));
+    ws.on('pong', () => {
+      this.answered = true;
+    });
 
     // Unreferenced, so a quiet connection cannot keep the process alive on its
     // own. A shutdown should be decided by the server, not held open by a timer
     // whose only job is to stop a proxy getting bored.
-    this.heartbeat = setInterval(() => {
-      if (this.ws.readyState === this.ws.OPEN) this.ws.ping();
-    }, HEARTBEAT_MS).unref();
+    this.heartbeat = setInterval(() => this.beat(), HEARTBEAT_MS).unref();
+  }
+
+  /**
+   * Pings, and hangs up on a connection that never answered the last ping.
+   *
+   * A network can lose a connection without telling either end. A socket like
+   * that stays open here, and ready, until the operating system gives up on it,
+   * which can take hours: long enough to be seated and to time out every
+   * decision of a match its owner paid for. Public so the socket suite can
+   * drive it without waiting on a clock.
+   */
+  beat(): void {
+    if (this.ws.readyState !== this.ws.OPEN) return;
+
+    if (!this.answered) {
+      this.ended(1006, 'Stopped answering pings.');
+      this.ws.terminate();
+      return;
+    }
+
+    this.answered = false;
+    this.ws.ping();
+  }
+
+  requeue(now: number): void {
+    if (this.ready) this.readySince = now;
   }
 
   /**

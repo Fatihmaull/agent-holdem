@@ -1,4 +1,4 @@
-import { type Card, fullDeck, mulberry32, shuffle } from './cards';
+import { type Card, checkedDeck, fullDeck, mulberry32, shuffle } from './cards';
 import { evaluate } from './evaluate';
 
 export type Street = 'preflop' | 'flop' | 'turn' | 'river' | 'showdown' | 'complete';
@@ -77,13 +77,25 @@ export interface HandOptions {
   button: number;
   smallBlind: number;
   bigBlind: number;
+  /**
+   * The deck to deal from, off the end. What a real table passes, shuffled by
+   * something no agent can reproduce; see `src/server/deck.ts`.
+   */
+  deck?: readonly Card[];
+  /**
+   * Shuffles from a seeded generator instead, for tests that need the same hand
+   * twice. Never for a hand anybody plays: every seat is shown enough of the
+   * deck to search a seed space for the one that dealt it.
+   */
   seed?: number;
 }
 
 /** Deals a fresh hand and posts the blinds. Returns a state whose `toAct` is set. */
 export function startHand(options: HandOptions): HandState {
   const { handId, seats: configs, button, smallBlind, bigBlind } = options;
-  const random = options.seed === undefined ? Math.random : mulberry32(options.seed);
+  const deck = options.deck
+    ? checkedDeck(options.deck)
+    : shuffle(fullDeck(), options.seed === undefined ? Math.random : mulberry32(options.seed));
 
   const seats: Seat[] = configs.map((config, index) => ({
     index,
@@ -111,7 +123,7 @@ export function startHand(options: HandOptions): HandState {
     smallBlind,
     bigBlind,
     board: [],
-    deck: shuffle(fullDeck(), random),
+    deck,
     toAct: null,
     currentBet: 0,
     lastRaiseSize: bigBlind,

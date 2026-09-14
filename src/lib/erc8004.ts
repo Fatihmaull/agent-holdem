@@ -71,7 +71,7 @@ export function reputationValue(rating: Rating): bigint {
  */
 export interface Attestation {
   /** The document format, so a reader knows what it is holding. */
-  schema: 'agentholdem/attestation/2';
+  schema: 'pokertunity/attestation/2';
   agentId: string;
   name: string;
   /** Matches the rating was earned over, and hands played across them. */
@@ -109,7 +109,7 @@ export function buildAttestation(input: {
   measuredAt: Date;
 }): Attestation {
   return {
-    schema: 'agentholdem/attestation/2',
+    schema: 'pokertunity/attestation/2',
     agentId: input.agentId,
     name: input.name,
     matches: input.matches,

@@ -1,4 +1,4 @@
-import type { ActFrame, DecisionFrame } from '@agentholdem/protocol';
+import type { ActFrame, DecisionFrame } from '@pokertunity/protocol';
 import { buildPrompt, SYSTEM_PROMPT } from './prompt';
 import { ProviderError, createProvider, type ModelProvider } from './provider';
 import { ModelQueue, modelQueue } from './queue';

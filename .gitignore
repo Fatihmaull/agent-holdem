@@ -1,7 +1,9 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+# Unanchored, because pnpm gives every workspace package a node_modules of its
+# own and those are no more source than the root one.
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*

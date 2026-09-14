@@ -124,15 +124,21 @@ export function Cashier({ onClose }: { onClose: () => void }) {
 
       // Written down before anything else can fail. A deposit whose hash is on
       // record can be finished later; one whose hash was only ever in this tab
-      // cannot.
-      await fetch('/api/cashier/pending', {
+      // cannot, so the player is told when that is the position they are in.
+      const noted = await fetch('/api/cashier/pending', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ intentId: intent.intentId, txHash }),
-      }).catch(() => {});
+      })
+        .then((response) => response.ok)
+        .catch(() => false);
 
       setStage('confirming');
-      setStatus('Waiting for the network to confirm. This takes a few blocks.');
+      setStatus(
+        noted
+          ? 'Waiting for the network to confirm. This takes a few blocks.'
+          : 'Waiting for the network to confirm. Keep this window open until it does: the deposit could not be saved to finish later.',
+      );
 
       const credited = await pollConfirm(txHash, chain.key, (message) => setStatus(message));
       await refresh();
@@ -274,8 +280,18 @@ function ChipTower({ chips }: { chips: number }) {
 }
 
 /**
+ * How often to ask. The confirm route allows ten calls a minute, so asking any
+ * faster than this runs the cashier into its own rate limit mid-wait.
+ */
+const POLL_MS = 6_000;
+
+/**
  * A deposit is credited only once the chain has confirmed it, so the cashier
  * keeps asking rather than pretending the chips have arrived.
+ *
+ * It keeps asking through everything that is not a refusal: a transaction still
+ * being mined (202), a rate limit (429, waited out as told) and a node that did
+ * not answer (5xx). Only a 4xx the arena chose to send ends the wait.
  */
 async function pollConfirm(txHash: string, chainKey: string, onStatus: (message: string) => void): Promise<number> {
   for (let attempt = 0; attempt < 40; attempt++) {
@@ -284,13 +300,30 @@ async function pollConfirm(txHash: string, chainKey: string, onStatus: (message:
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ txHash, chain: chainKey }),
     });
-    const body = (await response.json()) as { chips?: number; error?: string };
+    const body = (await response.json().catch(() => ({}))) as {
+      status?: 'credited' | 'pending';
+      chips?: number;
+      confirmations?: number;
+      required?: number;
+      error?: string;
+    };
 
-    if (response.ok && typeof body.chips === 'number') return body.chips;
-    if (body.error && !/confirmation/i.test(body.error)) throw new Error(body.error);
+    if (response.ok && body.status === 'credited' && typeof body.chips === 'number') return body.chips;
 
-    onStatus(body.error ?? 'Waiting for the network to confirm.');
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    let pause = POLL_MS;
+    if (response.status === 202) {
+      onStatus(`Waiting for the network to confirm (${body.confirmations ?? 0} of ${body.required ?? '?'}).`);
+    } else if (response.status === 429) {
+      const seconds = Number(response.headers.get('retry-after'));
+      if (Number.isFinite(seconds) && seconds > 0) pause = seconds * 1000;
+      onStatus('Waiting for the network to confirm.');
+    } else if (response.status >= 500) {
+      onStatus(body.error ?? 'The network did not answer. Trying again.');
+    } else {
+      throw new Error(body.error ?? 'The cashier could not complete that.');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pause));
   }
   throw new Error(
     'That deposit has not confirmed yet. It is on record, so reopen the cashier later and it will be finished then.',

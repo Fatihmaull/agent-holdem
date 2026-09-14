@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull, sql as raw } from 'drizzle-orm';
+import { TransactionRollbackError, and, desc, eq, inArray, isNotNull, isNull, sql as raw } from 'drizzle-orm';
 
 import { db } from '../db/client';
 import {
@@ -12,6 +12,7 @@ import {
   seats,
   users,
 } from '../db/schema';
+import type { Card } from '../poker/cards';
 import type { HandEvent, HandState } from '../poker/engine';
 import type { DecisionRecord } from '../agent/decide';
 import { MATCH, SEAT_COST, type MatchConfig } from '../lib/economy';
@@ -43,37 +44,6 @@ export async function loadSeats(matchId: string): Promise<SeatedAgent[]> {
     .orderBy(seats.seatIndex);
 
   return rows;
-}
-
-export async function saveStacks(matchId: string, stacks: Array<{ seatIndex: number; stack: number }>): Promise<void> {
-  if (stacks.length === 0) return;
-  await db.transaction(async (tx) => {
-    for (const { seatIndex, stack } of stacks) {
-      await tx
-        .update(seats)
-        .set({ stack })
-        .where(and(eq(seats.matchId, matchId), eq(seats.seatIndex, seatIndex)));
-    }
-  });
-}
-
-/**
- * Records that a seat can no longer play.
- *
- * The hand number is what fixes finishing order among everyone eliminated:
- * surviving to hand ninety beats going out on hand five, which is how every
- * tournament has ever ranked the people who did not win.
- *
- * The stack is deliberately left alone. An agent short of a big blind is out of
- * the match, but the chips it still holds are its owner's and are returned at
- * settlement like anyone else's. Zeroing the row here would quietly destroy
- * them.
- */
-export async function bustSeat(matchId: string, seatIndex: number, handNumber: number): Promise<void> {
-  await db
-    .update(seats)
-    .set({ bustedAtHand: handNumber })
-    .where(and(eq(seats.matchId, matchId), eq(seats.seatIndex, seatIndex), isNull(seats.bustedAtHand)));
 }
 
 /**
@@ -286,6 +256,12 @@ export async function createMatch(
         handCap: match.handCap,
       },
     };
+  }).catch((error: unknown) => {
+    // `rollback` throws rather than returning, so a match that could not seat
+    // two arrives here. Letting it travel would fail the matchmaker's whole
+    // tick and leave every other group it had formed unopened.
+    if (error instanceof TransactionRollbackError) return null;
+    throw error;
   });
 }
 
@@ -302,15 +278,24 @@ export interface Finish {
   after: Rating;
 }
 
+/** What closing a match came to. */
+export interface Settlement {
+  /** Everyone who held a seat, rated or not, and the stack each was paid back. */
+  entrants: Array<{ agentId: string; finalStack: number }>;
+  /** Places and ratings. Empty when the match rates nobody. */
+  finishes: Finish[];
+}
+
 /**
  * Closes a match: returns every stack, works out the finishing order, and
  * updates everybody's rating from it.
  *
  * An abandoned match returns the chips and rates nobody. Nothing about a match
- * the server walked out of says anything about how well anyone played.
+ * the server walked out of says anything about how well anyone played. Its
+ * entrants are still named, because each of them is owed being told it ended.
  */
-export async function settleMatch(matchId: string, ending: MatchEnding, handsPlayed: number): Promise<Finish[]> {
-  return db.transaction(async (tx): Promise<Finish[]> => {
+export async function settleMatch(matchId: string, ending: MatchEnding, handsPlayed: number): Promise<Settlement> {
+  return db.transaction(async (tx): Promise<Settlement> => {
     const rows = await tx
       .select({
         agentId: seats.agentId,
@@ -355,7 +340,8 @@ export async function settleMatch(matchId: string, ending: MatchEnding, handsPla
     // An abandoned match rates nobody: it says nothing about how anyone played.
     // Neither does a match that somehow ended with one entrant, since a place
     // needs somebody to be placed above.
-    if (ending === 'abandoned' || rows.length < 2) return [];
+    const entrants = rows.map((row) => ({ agentId: row.agentId, finalStack: row.stack }));
+    if (ending === 'abandoned' || rows.length < 2) return { entrants, finishes: [] };
 
     const placed = rows.map((row) => ({
       row,
@@ -405,7 +391,7 @@ export async function settleMatch(matchId: string, ending: MatchEnding, handsPla
       });
     }
 
-    return finishes;
+    return { entrants, finishes };
   });
 }
 
@@ -438,27 +424,61 @@ export async function liveMatchIds(): Promise<string[]> {
   return rows.map((row) => row.id);
 }
 
+/** A decision as it is stored with its hand. */
+export interface RecordedDecision {
+  /** Engine position, which is what the lineup stored beside it is indexed by. */
+  seatIndex: number;
+  agentId: string;
+  record: DecisionRecord;
+  street: string;
+  /**
+   * What the action came to, read off this decision's own event: the level
+   * reached for a bet or a raise, the chips put in for a call. Searching the
+   * hand for it afterwards found the seat's last call rather than this one.
+   */
+  amount: number;
+}
+
 export interface PersistedHand {
   matchId: string;
   handNumber: number;
-  seed: number;
+  /** The deck as dealt, off the end. What a replay deals from. */
+  deck: readonly Card[];
   state: HandState;
-  lineup: Array<{ seatIndex: number; agentId: string; name: string; startingStack: number }>;
   startedAt: Date;
-  decisions: Array<{ seatIndex: number; agentId: string; record: DecisionRecord; street: string }>;
+  bigBlind: number;
+  /** In engine order: `seatIndex` is the position, `chair` the seat row it plays from. */
+  lineup: Array<{ seatIndex: number; chair: number; agentId: string; name: string; startingStack: number }>;
+  decisions: RecordedDecision[];
+  outcomes: HandOutcome[];
 }
 
-/** Stores a finished hand whole, so it can be replayed exactly from its seed. */
-export async function saveHand(hand: PersistedHand): Promise<string> {
+/**
+ * Stores a finished hand and everything it changed, as one transaction.
+ *
+ * The hand, its decisions, the results and counters, the stacks it left, the
+ * seats it knocked out and the release of the seats land together or not at
+ * all. Written separately, a failure between them left results and counters
+ * describing a hand whose stacks never moved: numbers published about chips that
+ * stayed where they were, and a table that dealt on from the old stacks.
+ */
+export async function recordHand(hand: PersistedHand): Promise<string> {
   return db.transaction(async (tx) => {
     const [row] = await tx
       .insert(hands)
       .values({
         matchId: hand.matchId,
         handNumber: hand.handNumber,
-        seed: hand.seed,
+        deck: [...hand.deck],
         button: hand.state.button,
-        lineup: hand.lineup,
+        // Stored in the shape replays already read. The chair is the runtime's
+        // business; the stored hand is indexed by position throughout.
+        lineup: hand.lineup.map(({ seatIndex, agentId, name, startingStack }) => ({
+          seatIndex,
+          agentId,
+          name,
+          startingStack,
+        })),
         board: hand.state.board,
         pots: hand.state.pots,
         events: hand.state.events satisfies HandEvent[],
@@ -479,15 +499,72 @@ export async function saveHand(hand: PersistedHand): Promise<string> {
           reasoning: entry.record.reasoning,
           say: entry.record.say,
           action: entry.record.action.type,
-          // `to` is only set for a bet or a raise. A call's size comes from the
-          // hand's own action event, so it is read back from there rather than
-          // stored as nothing.
-          amount: entry.record.action.to ?? calledAmount(hand.state, entry.seatIndex, entry.record.action.type),
+          amount: entry.amount,
           elapsedMs: entry.record.elapsedMs,
           outcome: entry.record.outcome,
         })),
       );
     }
+
+    if (hand.outcomes.length > 0) {
+      const filed = await tx
+        .insert(results)
+        .values(
+          hand.outcomes.map((outcome) => ({
+            handId: row.id,
+            agentId: outcome.agentId,
+            matchId: hand.matchId,
+            bigBlind: hand.bigBlind,
+            startingStack: outcome.startingStack,
+            net: outcome.net,
+            showdown: outcome.showdown,
+            opponents: outcome.opponents,
+            opponentRating: outcome.opponentRating,
+          })),
+        )
+        .onConflictDoNothing()
+        .returning({ agentId: results.agentId });
+
+      // The counters follow the rows that actually went in. A result row that
+      // already existed was already counted, and counting it again would move
+      // a profile's numbers away from the rows every metric is computed from.
+      const counted = new Set(filed.map((entry) => entry.agentId));
+
+      for (const outcome of hand.outcomes) {
+        if (!counted.has(outcome.agentId)) continue;
+        await tx
+          .update(agents)
+          .set({
+            handsPlayed: raw`${agents.handsPlayed} + 1`,
+            handsWon: raw`${agents.handsWon} + ${outcome.won ? 1 : 0}`,
+            chipsWon: raw`${agents.chipsWon} + ${outcome.net}`,
+            biggestPot: raw`GREATEST(${agents.biggestPot}, ${outcome.won ? outcome.potSize : 0})`,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, outcome.agentId));
+      }
+    }
+
+    for (const seat of hand.lineup) {
+      const stack = hand.state.seats[seat.seatIndex].stack;
+      const chair = and(eq(seats.matchId, hand.matchId), eq(seats.seatIndex, seat.chair));
+
+      await tx.update(seats).set({ stack }).where(chair);
+
+      // A stack too short to post a big blind cannot play another hand. The
+      // hand number fixes finishing order among everyone who went out, and the
+      // stack is deliberately left alone: those chips are still the owner's and
+      // go back at settlement like anyone else's.
+      if (stack < hand.bigBlind) {
+        await tx
+          .update(seats)
+          .set({ bustedAtHand: hand.handNumber })
+          .where(and(chair, isNull(seats.bustedAtHand)));
+      }
+    }
+
+    // The chips are on record, so no seat belongs to a hand any more.
+    await tx.update(seats).set({ inHand: false }).where(eq(seats.matchId, hand.matchId));
 
     await tx
       .update(matches)
@@ -496,15 +573,6 @@ export async function saveHand(hand: PersistedHand): Promise<string> {
 
     return row.id;
   });
-}
-
-/** What a seat actually put in for a given action, taken from the hand's events. */
-function calledAmount(state: HandState, seatIndex: number, action: string): number {
-  for (let i = state.events.length - 1; i >= 0; i--) {
-    const event = state.events[i];
-    if (event.type === 'action' && event.seat === seatIndex && event.action === action) return event.amount;
-  }
-  return 0;
 }
 
 export interface HandOutcome {

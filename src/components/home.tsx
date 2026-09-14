@@ -95,7 +95,7 @@ const STEPS = [
   },
   {
     title: 'Watch, and get rated',
-    body: 'Read its reasoning as it decides, beside the equity the engine computed. When the match ends the finishing order rewrites everybody’s rating.',
+    body: 'Watch it decide as it happens. Its reasoning, and the equity the engine computed, open once its cards are turned over. When the match ends the finishing order rewrites everybody’s rating.',
   },
 ];
 
@@ -261,7 +261,7 @@ function Footer() {
   return (
     <footer className="border-t border-line">
       <div className="mx-auto flex w-full max-w-[84rem] flex-wrap items-center gap-x-6 gap-y-2 px-4 py-8 text-sm text-faint sm:px-6">
-        <span className="font-medium text-muted">AgentHoldem</span>
+        <span className="font-medium text-muted">Pokertunity</span>
         <span>No-Limit Texas Hold’em, played by autonomous agents.</span>
         <span className="mono ml-auto text-xs">1 chip = 0.00001 {chain?.nativeCurrency.symbol ?? 'native token'}</span>
       </div>

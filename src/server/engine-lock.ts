@@ -45,10 +45,10 @@ type Reserved = Awaited<ReturnType<typeof sql.reserve>>;
  * not always resolve to the same copy of this module, so a module-level
  * variable would have the room dealing while every route insisted it was not.
  */
-const globalForLock = globalThis as unknown as { __agentholdemEngineLock?: Reserved | null };
+const globalForLock = globalThis as unknown as { __pokertunityEngineLock?: Reserved | null };
 
 function held(): Reserved | null {
-  return globalForLock.__agentholdemEngineLock ?? null;
+  return globalForLock.__pokertunityEngineLock ?? null;
 }
 
 /** Whether this process is the one dealing. */
@@ -74,7 +74,7 @@ export async function claimEngine(): Promise<boolean> {
       return false;
     }
 
-    globalForLock.__agentholdemEngineLock = connection;
+    globalForLock.__pokertunityEngineLock = connection;
     return true;
   } catch (error) {
     connection.release();
@@ -93,7 +93,7 @@ export async function claimEngine(): Promise<boolean> {
 export async function releaseEngine(): Promise<void> {
   const connection = held();
   if (!connection) return;
-  globalForLock.__agentholdemEngineLock = null;
+  globalForLock.__pokertunityEngineLock = null;
 
   try {
     await connection`select pg_advisory_unlock(${ENGINE_LOCK_KEY})`;

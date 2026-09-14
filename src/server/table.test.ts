@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 // Must come before anything that reaches the database module. Nothing here
 // runs a query, but that module refuses to load without a connection string.
 import '../dev/test-env';
-import { startHand } from '../poker/engine';
+import { applyAction, startHand } from '../poker/engine';
 import { MATCH } from '../lib/economy';
-import { MatchRuntime, tablePalette } from './table';
+import { MatchRuntime, amountOf, tablePalette } from './table';
 import type { SeatedAgent } from './store';
+import type { BrainView } from './view';
 
 const config = MATCH;
 
@@ -138,3 +139,84 @@ test('an agent that is not in this match is never treated as being in its hand',
   assert.equal(runtime.isInLiveHand('alice'), true);
   assert.equal(runtime.isInLiveHand('carol'), false, 'a stranger to this lineup is nothing to do with it');
 });
+
+test('a decision in a live hand reaches every viewer sealed, its own owner included', () => {
+  // Equity and reasoning are the holding by another name. An opponent's owner
+  // reading them off the public feed mid-hand is reading the cards.
+  const { runtime } = sparseTable();
+  (runtime as unknown as Record<string, unknown>).brain = thinking();
+
+  for (const viewer of [null, 'alice', 'bob']) {
+    const brain = runtime.view(viewer).brain!;
+    assert.equal(brain.sealed, true, `sealed for ${viewer ?? 'a stranger'}`);
+    assert.equal(brain.reasoning, '');
+    assert.equal(brain.equity, null);
+    assert.equal(brain.handRead, null);
+    assert.equal(brain.action, 'raise', 'what it did is public, only why is not');
+    assert.equal(brain.elapsedMs, 2100, 'and so is how long it took');
+  }
+});
+
+test('a decision opens once its cards have been turned over', () => {
+  const { runtime } = sparseTable();
+  const internals = runtime as unknown as Record<string, unknown>;
+  internals.brain = thinking();
+  internals.brainOpen = true;
+
+  const brain = runtime.view(null).brain!;
+  assert.equal(brain.sealed, false);
+  assert.equal(brain.equity, 0.91);
+  assert.match(brain.reasoning, /nut flush/);
+});
+
+test('each decision is stored with what it came to, not with the seat’s last action of that kind', () => {
+  // A seat that calls twice in one hand made two different calls. Reading the
+  // amount back out of the finished hand found the later one for both.
+  let state = startHand({
+    handId: 'h',
+    seats: [
+      { agentId: 'a', stack: 2000 },
+      { agentId: 'b', stack: 2000 },
+    ],
+    button: 0,
+    smallBlind: 10,
+    bigBlind: 20,
+    seed: 7,
+  });
+
+  let cursor = state.events.length;
+  state = applyAction(state, { type: 'call' });
+  assert.equal(amountOf(state, cursor), 10, 'the button completes its small blind');
+
+  state = applyAction(state, { type: 'check' });
+  cursor = state.events.length;
+  state = applyAction(state, { type: 'bet', to: 40 });
+  assert.equal(amountOf(state, cursor), 40, 'a bet is stored as the level it reached');
+
+  cursor = state.events.length;
+  state = applyAction(state, { type: 'call' });
+  assert.equal(amountOf(state, cursor), 40, 'and this call is its own, not the one before it');
+
+  cursor = state.events.length;
+  state = applyAction(state, { type: 'check' });
+  assert.equal(amountOf(state, cursor), 0, 'a check puts nothing in');
+});
+
+function thinking(): BrainView {
+  return {
+    seat: 1,
+    seatName: 'Alice',
+    color: 'red',
+    street: 'river',
+    reasoning: 'I have the nut flush, so this raise is for value.',
+    equity: 0.91,
+    handRead: { made: 'flush', flushDraw: false, openEnded: false, gutshot: false, overcards: false },
+    potOdds: 0.25,
+    action: 'raise',
+    amount: 600,
+    outcome: 'decided',
+    failure: null,
+    elapsedMs: 2100,
+    sealed: false,
+  };
+}

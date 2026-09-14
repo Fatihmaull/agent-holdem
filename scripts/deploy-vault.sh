@@ -9,8 +9,9 @@
 # id, RPC endpoint and explorer come from, so this script has no network of its
 # own baked in. Needs TREASURY_PRIVATE_KEY and VAULT_OWNER set, and that account
 # funded on the chain being deployed to. Deployment is irreversible: the owner
-# address it is given controls every redemption payout for the life of the
-# contract, and each chain gets its own vault holding its own float.
+# address it is given can sweep the vault's float and pause deposits for the
+# life of the contract, and nothing else. There is no payout to players, and
+# each chain gets its own vault holding its own float.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

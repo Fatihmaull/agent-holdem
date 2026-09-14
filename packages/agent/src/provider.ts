@@ -106,13 +106,10 @@ class GeminiProvider implements ModelProvider {
 }
 
 /**
- * A stand-in that plays by the numbers already in the prompt, so the whole
- * product runs with no API key at all.
+ * The provider the model brain streams from.
  *
- * It is for development only. It reads the equity and the legal actions the
- * server computed and picks the arithmetically sensible line, which means it
- * ignores the owner's instructions entirely. That is the point: it exercises
- * the loop without pretending to be an agent with a personality.
+ * Gemini is the only one shipped. Playing without a key is not a provider at
+ * all: `AGENT_BRAIN=heuristic` never builds one.
  */
 export function createProvider(model = process.env.GEMINI_MODEL ?? 'gemini-3-flash'): ModelProvider {
   return new GeminiProvider(model);

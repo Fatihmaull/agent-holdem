@@ -4,9 +4,15 @@ import assert from 'node:assert/strict';
 // a query, but that module refuses to load without a connection string.
 import '../dev/test-env';
 import type { WebSocket } from 'ws';
-import { CLOSE, MAX_FRAMES_PER_SECOND, MAX_REASONING_BYTES, type ActFrame } from '@agentholdem/protocol';
-import { attach, detach, linkFor } from './presence';
-import { SocketLink } from './socket';
+import {
+  CLOSE,
+  MAX_FRAMES_PER_SECOND,
+  MAX_REASONING_BYTES,
+  PROTOCOL_VERSION,
+  type ActFrame,
+} from '@pokertunity/protocol';
+import { attach, connectionsFor, detach, linkFor } from './presence';
+import { SocketLink, greet } from './socket';
 
 /**
  * A socket that records rather than transmits.
@@ -31,6 +37,22 @@ class FakeSocket {
     return this;
   }
 
+  once(event: string, handler: (...args: never[]) => void): this {
+    const wrapped = (...args: never[]) => {
+      this.off(event, wrapped);
+      handler(...args);
+    };
+    return this.on(event, wrapped);
+  }
+
+  off(event: string, handler: (...args: never[]) => void): this {
+    this.handlers.set(
+      event,
+      (this.handlers.get(event) ?? []).filter((entry) => entry !== handler),
+    );
+    return this;
+  }
+
   send(payload: string): void {
     this.sent.push(payload);
   }
@@ -41,10 +63,21 @@ class FakeSocket {
     this.emit('close', code, Buffer.from(reason));
   }
 
-  ping(): void {}
+  pings = 0;
+  ping(): void {
+    this.pings += 1;
+  }
+
+  terminated = false;
+  terminate(): void {
+    this.terminated = true;
+    this.readyState = 3;
+    this.emit('close', 1006, Buffer.from(''));
+  }
 
   emit(event: string, ...args: unknown[]): void {
-    for (const handler of this.handlers.get(event) ?? []) (handler as (...a: unknown[]) => void)(...args);
+    // A copy, because a `once` handler takes itself off the list mid-loop.
+    for (const handler of [...(this.handlers.get(event) ?? [])]) (handler as (...a: unknown[]) => void)(...args);
   }
 
   /** What an agent would put on the wire. */
@@ -238,4 +271,70 @@ test('a replaced connection does not stamp its goodbye over the live one', () =>
 
   second.ws.close(1001, 'going away');
   assert.equal(linkFor('agent-1'), undefined);
+});
+
+test('an agent reconnecting is not counted against its own account', () => {
+  // The cap counts the sockets an account holds. An agent whose last socket has
+  // not been noticed as gone yet is replacing that socket, not adding one, and
+  // refusing it is refusing the owner's own agent at the moment it needs back in.
+  const ws = new FakeSocket();
+  const link = new SocketLink(ws as unknown as WebSocket, 'agent-cap', 'owner-cap');
+  attach(link);
+  after(() => detach(link));
+
+  assert.equal(connectionsFor('owner-cap'), 1);
+  assert.equal(connectionsFor('owner-cap', 'agent-cap'), 0, 'its own older socket is about to be replaced');
+  assert.equal(connectionsFor('owner-cap', 'agent-other'), 1, 'a different agent is one more connection');
+});
+
+test('a client that hangs up while its token is looked up is never put on the floor', async () => {
+  // The lookup is a database round trip. A client gone before it answers has
+  // already fired its close, so a link built on the socket afterwards would sit
+  // in presence for good: connected, queued off its pipelined ready, and seated
+  // to time out every decision of a match its owner was charged for.
+  const ws = new FakeSocket();
+  const greeted = greet(ws as unknown as WebSocket, async () => {
+    ws.close(1006, 'connection lost');
+    return { agentId: 'agent-ghost', userId: 'owner-ghost', name: 'Ghost', color: 'red' };
+  });
+
+  ws.receive({ type: 'hello', version: PROTOCOL_VERSION, token: 'ah_test' });
+  ws.receive({ type: 'ready' });
+  await greeted;
+
+  assert.equal(linkFor('agent-ghost'), undefined, 'no link for a socket that is already closed');
+  assert.equal(connectionsFor('owner-ghost'), 0, 'and nothing counted against its owner');
+});
+
+test('a connection that stops answering pings is hung up on and taken off the floor', () => {
+  const { ws, link } = linked();
+  attach(link);
+  ws.receive({ type: 'ready' });
+
+  link.beat();
+  assert.equal(ws.pings, 1, 'a quiet connection is pinged');
+
+  ws.emit('pong');
+  link.beat();
+  assert.equal(ws.pings, 2);
+  assert.equal(ws.terminated, false, 'one that answered stays');
+
+  link.beat();
+  assert.equal(ws.terminated, true, 'one that did not answer the last ping is ended');
+  assert.equal(linkFor('agent-1'), undefined);
+  assert.equal(link.ready, false, 'and is no longer waiting to be seated');
+});
+
+test('a match that ends starts the wait again, for an agent still asking', () => {
+  const { ws, link } = linked();
+  ws.receive({ type: 'ready' });
+  const asked = link.readySince!;
+  const matchEnded = asked + 80 * 60_000;
+
+  link.requeue(matchEnded);
+  assert.equal(link.readySince, matchEnded, 'eighty minutes at a table is not eighty minutes in the queue');
+
+  ws.receive({ type: 'stop' });
+  link.requeue(matchEnded + 60_000);
+  assert.equal(link.readySince, null, 'an agent that asked to stop is not put back in the queue');
 });

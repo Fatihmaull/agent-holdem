@@ -3,7 +3,7 @@ import { db } from '../db/client';
 import { agents, decisions, matchResults, results, seats, users } from '../db/schema';
 import { type Axes, type AxisDecision, computeAxes } from '../lib/axes';
 import { winRate, type WinRate } from '../lib/stats';
-import { conservative } from '../lib/rating';
+import { PUBLISHED_SIGMAS, conservative } from '../lib/rating';
 
 /**
  * The published numbers.
@@ -61,7 +61,11 @@ export async function leaderboard(options: { limit?: number; agentId?: string } 
     .leftJoin(results, eq(results.agentId, agents.id))
     .where(options.agentId ? eq(agents.id, options.agentId) : undefined)
     .groupBy(agents.id, agents.name, users.chips, seats.stack)
-    .orderBy(desc(agents.ratingMu))
+    // Ordered on the published figure before the limit, not on mu. Cutting on
+    // mu lets a new agent with one lucky match, and the sigma that goes with
+    // it, take a place from an established agent that outranks it once both
+    // are published.
+    .orderBy(raw`${agents.ratingMu} - ${PUBLISHED_SIGMAS} * ${agents.ratingSigma} desc`, desc(agents.matchesPlayed))
     .limit(options.limit ?? 50);
 
   return rows

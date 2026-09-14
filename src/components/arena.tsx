@@ -29,7 +29,6 @@ const TABS: Array<{ id: Tab; label: string }> = [
 export function Arena({ matchId }: { matchId: string }) {
   const {
     table,
-    streaming,
     isStreaming,
     idleReason,
     connected,
@@ -63,8 +62,9 @@ export function Arena({ matchId }: { matchId: string }) {
         seatName: table.brain.seatName,
         color: table.brain.color,
         street: table.brain.street,
-        reasoning: isStreaming ? streaming : table.brain.reasoning,
+        reasoning: table.brain.reasoning,
         streaming: isStreaming,
+        sealed: table.brain.sealed,
         equity: table.brain.equity,
         potOdds: table.brain.potOdds,
         made: table.brain.handRead?.made ?? null,

@@ -8,7 +8,7 @@ importers:
 
   .:
     dependencies:
-      '@agentholdem/protocol':
+      '@pokertunity/protocol':
         specifier: workspace:*
         version: link:packages/protocol
       drizzle-orm:
@@ -81,7 +81,7 @@ importers:
 
   packages/agent:
     dependencies:
-      '@agentholdem/protocol':
+      '@pokertunity/protocol':
         specifier: workspace:*
         version: link:../protocol
       tsx:

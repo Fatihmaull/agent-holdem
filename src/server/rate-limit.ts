@@ -38,7 +38,6 @@ export const LIMITS = {
   'deposit-confirm': { perMinute: 10, burst: 5 },
   'deposit-start': { perMinute: 10, burst: 5 },
   'sign-in': { perMinute: 30, burst: 10 },
-  seat: { perMinute: 20, burst: 6 },
   write: { perMinute: 30, burst: 10 },
 } as const satisfies Record<string, Limit>;
 

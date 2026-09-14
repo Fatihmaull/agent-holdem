@@ -12,6 +12,11 @@ export const dynamic = 'force-dynamic';
  * Hole cards are redacted per viewer on the way out. Events that carry seat
  * state are replaced with a snapshot rendered for this specific viewer, so a
  * spectator's stream physically does not contain another agent's cards.
+ *
+ * What a deciding seat thinks of its cards never reaches the bus in the first
+ * place: the runtime seals reasoning, equity and hand read for the whole hand
+ * and opens them only with a `reveal` at showdown. Forwarding everything else
+ * unchanged is safe because of that, not because of anything done here.
  */
 export async function GET(request: Request, context: RouteContext<'/api/matches/[id]/stream'>): Promise<Response> {
   const { id } = await context.params;
@@ -56,15 +61,7 @@ export async function GET(request: Request, context: RouteContext<'/api/matches/
       const send = (event: ArenaEvent) => write(`data: ${JSON.stringify(event)}\n\n`);
       const snapshot = () => send({ type: 'snapshot', table: runtime.view(viewerAgentId) });
 
-      snapshot();
-
-      const unsubscribe = runtime.bus.subscribe((event) => {
-        // Anything carrying seat state is re-rendered for this viewer instead of
-        // forwarded, which is what keeps the redaction on the server.
-        if (event.type === 'seats' || event.type === 'hand-start' || event.type === 'snapshot') snapshot();
-        else send(event);
-      });
-
+      let unsubscribe = () => {};
       const heartbeat = setInterval(() => write(': keep-alive\n\n'), 15_000);
 
       const close = () => {
@@ -78,6 +75,20 @@ export async function GET(request: Request, context: RouteContext<'/api/matches/
           // Already closed by the client.
         }
       };
+
+      snapshot();
+
+      unsubscribe = runtime.bus.subscribe((event) => {
+        // Anything carrying seat state is re-rendered for this viewer instead of
+        // forwarded, which is what keeps the redaction on the server.
+        if (event.type === 'seats' || event.type === 'hand-start' || event.type === 'snapshot') snapshot();
+        else send(event);
+
+        // The match is over and its runtime is about to be dropped. A stream left
+        // open past this point keeps that runtime reachable for as long as the
+        // tab stays open, sending heartbeats about a table nobody is dealing.
+        if (event.type === 'idle') close();
+      });
 
       request.signal.addEventListener('abort', close, { once: true });
     },

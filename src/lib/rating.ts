@@ -32,6 +32,14 @@ export interface Rating {
 export const DEFAULT_RATING: Rating = { mu: 25, sigma: 25 / 3 };
 
 /**
+ * How far below the estimate the published figure sits, in standard deviations.
+ *
+ * Exported for the one place that has to rank on it inside a query, so the
+ * database orders by the same number `conservative` returns.
+ */
+export const PUBLISHED_SIGMAS = 3;
+
+/**
  * The published number: three standard deviations below the estimate.
  *
  * A brand new agent scores zero, not 25, because we have no evidence about it
@@ -40,7 +48,7 @@ export const DEFAULT_RATING: Rating = { mu: 25, sigma: 25 / 3 };
  * what it used to mean.
  */
 export function conservative(rating: Rating): number {
-  return rating.mu - 3 * rating.sigma;
+  return rating.mu - PUBLISHED_SIGMAS * rating.sigma;
 }
 
 export interface RatingConfig {

@@ -10,6 +10,7 @@ import {
   settleMatch,
   type Candidate,
   type MatchEnding,
+  type Settlement,
 } from './store';
 
 /**
@@ -54,12 +55,12 @@ const BAND_START = 6;
 const BAND_GROWTH_PER_MINUTE = 6;
 
 const globalForFloor = globalThis as unknown as {
-  __agentholdemFloor?: { timer: NodeJS.Timeout | null };
+  __pokertunityFloor?: { timer: NodeJS.Timeout | null };
 };
 
 function floor(): { timer: NodeJS.Timeout | null } {
-  if (!globalForFloor.__agentholdemFloor) globalForFloor.__agentholdemFloor = { timer: null };
-  return globalForFloor.__agentholdemFloor;
+  if (!globalForFloor.__pokertunityFloor) globalForFloor.__pokertunityFloor = { timer: null };
+  return globalForFloor.__pokertunityFloor;
 }
 
 export function startMatchmaker(): void {
@@ -113,7 +114,7 @@ export async function abandonOrphanedMatches(): Promise<number> {
 
   for (const matchId of orphaned) {
     try {
-      await settleMatch(matchId, 'abandoned', 0);
+      announce(matchId, 'abandoned', 0, await settleMatch(matchId, 'abandoned', 0));
     } catch (error) {
       console.error(`[matchmaker] could not abandon ${matchId}`, error);
     }
@@ -123,6 +124,10 @@ export async function abandonOrphanedMatches(): Promise<number> {
 }
 
 async function tick(): Promise<void> {
+  // Settlements that failed last time go first. Their agents stay seated until
+  // the chips land, so every tick one waits is a tick those agents cannot queue.
+  for (const matchId of [...unsettled.keys()]) await settle(matchId);
+
   // Chips are not topped up here. An owner claims them, once a day, from their
   // own page. A refill that happened on its own would make the claim pointless
   // and would quietly hand chips to accounts nobody is using.
@@ -255,42 +260,89 @@ function groupsFrom(waiting: readonly Entrant[], now = Date.now()): Entrant[][] 
 }
 
 /**
+ * Matches whose runtime has finished but whose chips have not gone back yet.
+ *
+ * Kept and retried every tick rather than given up on. A settlement that failed
+ * once used to be dropped along with the runtime, which left the seats written
+ * and the match marked as playing: its agents were never queued again, and
+ * their stacks sat on a table nobody was dealing until the process restarted.
+ */
+const unsettled = new Map<string, { ending: MatchEnding; hands: number }>();
+
+/** Settlements running right now, so a retry never overlaps the attempt it retries. */
+const settling = new Set<string>();
+
+/** How many finished matches are still holding chips, for the health check. */
+export function unsettledMatches(): number {
+  return unsettled.size;
+}
+
+/**
  * Closes out a match the moment its runtime says it is done.
  *
  * Settling is deliberately not the runtime's job. It returns chips and rewrites
  * ratings, and none of that belongs tangled up with the loop that deals cards.
+ * The runtime is dropped at once, since it has nothing left to deal; the chips
+ * are the part that is retried until it lands.
  */
 function onFinished(matchId: string, ending: MatchEnding, hands: number): void {
-  void (async () => {
-    try {
-      const finishes = await settleMatch(matchId, ending, hands);
+  closeMatch(matchId);
+  unsettled.set(matchId, { ending, hands });
+  void settle(matchId);
+}
 
-      // Told after settling, because the rating in the frame is the one the
-      // match produced and it does not exist until the finishing order does.
-      for (const finish of finishes) {
-        linkFor(finish.agentId)?.send({
-          type: 'match-end',
-          matchId,
-          ending,
-          handsPlayed: hands,
-          place: finish.place,
-          entrants: finishes.length,
-          finalStack: finish.finalStack,
-          rating: { before: conservative(finish.before), after: conservative(finish.after) },
-        });
-      }
+async function settle(matchId: string): Promise<void> {
+  const pending = unsettled.get(matchId);
+  if (!pending || settling.has(matchId)) return;
 
-      for (const finish of finishes.sort((a, b) => a.place - b.place)) {
-        const moved = finish.after.mu - finish.before.mu;
-        console.log(
-          `[matchmaker] ${matchId} #${finish.place} ${finish.name} ` +
-            `stack ${finish.finalStack} rating ${finish.after.mu.toFixed(1)} (${moved >= 0 ? '+' : ''}${moved.toFixed(1)})`,
-        );
-      }
-    } catch (error) {
-      console.error(`[matchmaker] could not settle ${matchId}`, error);
-    } finally {
-      closeMatch(matchId);
-    }
-  })();
+  settling.add(matchId);
+  try {
+    const settlement = await settleMatch(matchId, pending.ending, pending.hands);
+    unsettled.delete(matchId);
+    announce(matchId, pending.ending, pending.hands, settlement);
+  } catch (error) {
+    console.error(`[matchmaker] could not settle ${matchId}, trying again next tick`, error);
+  } finally {
+    settling.delete(matchId);
+  }
+}
+
+/**
+ * Tells every entrant the match is over, and starts each one's wait again.
+ *
+ * Told after settling, because the rating in the frame is the one the match
+ * produced and it does not exist until the finishing order does. Every entrant
+ * is told, not only the rated ones: an abandoned match still ended, and an agent
+ * never told so waits for a frame that is not coming. The wait restarts here
+ * because time spent at a table is not time spent in the queue, and the rating
+ * band widens with the queue.
+ */
+function announce(matchId: string, ending: MatchEnding, hands: number, settlement: Settlement): void {
+  const placed = new Map(settlement.finishes.map((finish) => [finish.agentId, finish]));
+  const now = Date.now();
+
+  for (const entrant of settlement.entrants) {
+    const finish = placed.get(entrant.agentId);
+    const link = linkFor(entrant.agentId);
+
+    link?.send({
+      type: 'match-end',
+      matchId,
+      ending,
+      handsPlayed: hands,
+      place: finish?.place ?? null,
+      entrants: settlement.entrants.length,
+      finalStack: entrant.finalStack,
+      rating: finish ? { before: conservative(finish.before), after: conservative(finish.after) } : null,
+    });
+    link?.requeue(now);
+  }
+
+  for (const finish of [...settlement.finishes].sort((a, b) => a.place - b.place)) {
+    const moved = finish.after.mu - finish.before.mu;
+    console.log(
+      `[matchmaker] ${matchId} #${finish.place} ${finish.name} ` +
+        `stack ${finish.finalStack} rating ${finish.after.mu.toFixed(1)} (${moved >= 0 ? '+' : ''}${moved.toFixed(1)})`,
+    );
+  }
 }

@@ -1,4 +1,4 @@
-import type { ActFrame, DecisionFrame, ServerFrame } from '@agentholdem/protocol';
+import type { ActFrame, DecisionFrame, ServerFrame } from '@pokertunity/protocol';
 
 /**
  * Who is connected, and how the rest of the arena talks to them.
@@ -45,15 +45,24 @@ export interface AgentLink {
   ): Promise<DecisionFrame | null>;
   /** Ends the connection with a code and a sentence the owner will read. */
   close(code: number, reason: string): void;
+  /**
+   * Starts its wait again from `now`, if it is still asking for a game.
+   *
+   * Called when its match ends. Time spent playing is not time spent waiting,
+   * and counting it would widen the rating band by every minute of the match:
+   * an agent back from eighty minutes at a table would be matched against the
+   * whole field, which is exactly what `readySince` exists to prevent.
+   */
+  requeue(now: number): void;
 }
 
 const globalForPresence = globalThis as unknown as {
-  __agentholdemPresence?: Map<string, AgentLink>;
+  __pokertunityPresence?: Map<string, AgentLink>;
 };
 
 function registry(): Map<string, AgentLink> {
-  if (!globalForPresence.__agentholdemPresence) globalForPresence.__agentholdemPresence = new Map();
-  return globalForPresence.__agentholdemPresence;
+  if (!globalForPresence.__pokertunityPresence) globalForPresence.__pokertunityPresence = new Map();
+  return globalForPresence.__pokertunityPresence;
 }
 
 /**
@@ -98,10 +107,19 @@ export function readyAgents(): Map<string, number> {
   return waiting;
 }
 
-/** How many sockets one account is holding. Used to cap them at the handshake. */
-export function connectionsFor(ownerId: string): number {
+/**
+ * How many sockets one account is holding. Used to cap them at the handshake.
+ *
+ * The agent about to connect is left out of the count, because its own older
+ * socket is about to be replaced rather than joined. Counting it would refuse an
+ * agent reconnecting before the arena noticed its last connection drop, which
+ * is exactly when an agent most needs to get back in.
+ */
+export function connectionsFor(ownerId: string, replacingAgentId?: string): number {
   let count = 0;
-  for (const link of registry().values()) if (link.ownerId === ownerId) count += 1;
+  for (const link of registry().values()) {
+    if (link.ownerId === ownerId && link.agentId !== replacingAgentId) count += 1;
+  }
   return count;
 }
 

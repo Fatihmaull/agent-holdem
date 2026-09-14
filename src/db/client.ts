@@ -12,10 +12,10 @@ if (!connectionString) {
  * life of the server. `next dev` reloads modules, so the pool is cached on
  * globalThis to avoid opening a new one on every hot reload.
  */
-const globalForDb = globalThis as unknown as { __agentholdemSql?: ReturnType<typeof postgres> };
+const globalForDb = globalThis as unknown as { __pokertunitySql?: ReturnType<typeof postgres> };
 
-const sql = globalForDb.__agentholdemSql ?? postgres(connectionString, { max: 10 });
-if (process.env.NODE_ENV !== 'production') globalForDb.__agentholdemSql = sql;
+const sql = globalForDb.__pokertunitySql ?? postgres(connectionString, { max: 10 });
+if (process.env.NODE_ENV !== 'production') globalForDb.__pokertunitySql = sql;
 
 export const db = drizzle(sql, { schema });
 export { sql };
